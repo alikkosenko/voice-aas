@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fixed light palette: avoids OEM/phone dark mode making text and cards unreadable. -->
+    <style name="Theme.AAS" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">@color/aas_primary</item>
+        <item name="colorPrimaryVariant">@color/aas_primary_dark</item>
+        <item name="colorOnPrimary">@color/aas_on_primary</item>
+        <item name="colorSecondary">@color/aas_accent</item>
+        <item name="colorOnSecondary">@color/aas_on_primary</item>
+        <item name="colorSurface">@color/aas_surface</item>
+        <item name="colorOnSurface">@color/aas_text</item>
+        <item name="android:colorAccent">@color/aas_accent</item>
+        <item name="android:colorBackground">@color/aas_background</item>
+        <item name="android:windowBackground">@color/aas_background</item>
+        <item name="android:navigationBarColor">@color/aas_background</item>
+        <item name="android:statusBarColor">@color/aas_primary_dark</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:textColorPrimary">@color/aas_text</item>
+        <item name="android:textColorSecondary">@color/aas_text_secondary</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.AAS.MaterialAlertDialog</item>
+    </style>
+
+    <style name="ThemeOverlay.AAS.MaterialAlertDialog" parent="ThemeOverlay.MaterialComponents.MaterialAlertDialog">
+        <item name="colorSurface">@color/aas_surface</item>
+        <item name="colorOnSurface">@color/aas_text</item>
+        <item name="android:textColorPrimary">@color/aas_text</item>
+        <item name="android:textColorSecondary">@color/aas_text_secondary</item>
+    </style>
+</resources>
