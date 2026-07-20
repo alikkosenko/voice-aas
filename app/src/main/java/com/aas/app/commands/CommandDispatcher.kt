@@ -37,7 +37,7 @@ class CommandDispatcher(
         )
         VoiceCommand.OpenMusic -> androidActions.openSelectedApp(
             prefs.musicPackage,
-            listOf("ru.yandex.music", "com.spotify.music"),
+            AndroidActions.MUSIC_PACKAGES,
             "Музыка открыта"
         )
         VoiceCommand.OpenYoutube -> androidActions.openSelectedApp(
@@ -48,6 +48,18 @@ class CommandDispatcher(
         is VoiceCommand.SearchYoutube -> androidActions.searchYoutube(
             command.query,
             prefs.youtubePackage
+        )
+        is VoiceCommand.PlayYoutube -> androidActions.playYoutube(
+            command.query,
+            prefs.youtubePackage
+        )
+        is VoiceCommand.SearchMusic -> androidActions.searchMusic(
+            command.query,
+            prefs.musicPackage
+        )
+        is VoiceCommand.PlayMusic -> androidActions.playMusic(
+            command.query,
+            prefs.musicPackage
         )
         VoiceCommand.OpenRadio -> androidActions.openSelectedApp(
             prefs.radioPackage,

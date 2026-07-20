@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -24,6 +25,7 @@ import com.aas.app.auth.AuthState
 import com.aas.app.runtime.AasRuntime
 import com.aas.app.service.VoiceReadyService
 import com.aas.app.vehicle.BydWriteAllowlist
+import com.aas.app.voice.SpeechOutput
 import com.aas.app.databinding.ActivityMainBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.util.concurrent.ExecutorService
@@ -38,6 +40,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private var suppressWriteSwitchCallback = false
     private var suppressNativeAssistantCallback = false
     private var suppressVoiceResponsesCallback = false
+    private var suppressAiSwitchCallback = false
 
     private val microphonePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -61,7 +64,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         AasRuntime.requireInitialized(this)
-        val readyService = Intent(this, VoiceReadyService::class.java)
+        val readyService = Intent(this, VoiceReadyService::class.java).apply {
+            action = VoiceReadyService.ACTION_REPAIR_NOW
+        }
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(this, readyService)
         else startService(readyService)
 
@@ -74,7 +79,6 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             setNativeAssistantDisabled(checked)
         }
 
-        setVoiceResponsesSwitch(prefs.voiceResponsesEnabled)
         suppressNativeAssistantCallback = true
         binding.switchDisableNativeAssistant.isChecked = prefs.nativeAssistantDisabled
         suppressNativeAssistantCallback = false
@@ -83,6 +87,12 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             AasRuntime.voice.setVoiceResponsesEnabled(checked)
             setVoiceResponsesSwitch(prefs.voiceResponsesEnabled)
             if (checked) restoreSpeechOutput(runTest = false, showToast = false)
+        }
+
+
+        binding.switchSeatFiveLevels.isChecked = prefs.seatMaxLevel >= 5
+        binding.switchSeatFiveLevels.setOnCheckedChangeListener { _, checked ->
+            prefs.seatMaxLevel = if (checked) 5 else 3
         }
 
         binding.switchVehicleWrites.isChecked = prefs.vehicleWritesEnabled
@@ -125,7 +135,31 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.buttonConnectAdb.setOnClickListener { connectAdbHelper() }
         binding.buttonRefreshVin.setOnClickListener { refreshVin() }
 
+        binding.editOpenAiModel.setText(prefs.openAiModel)
+        binding.switchAiCommands.setOnCheckedChangeListener { _, checked ->
+            if (suppressAiSwitchCallback) return@setOnCheckedChangeListener
+            if (checked && !prefs.hasOpenAiApiKey()) {
+                prefs.aiCommandsEnabled = false
+                setAiSwitch(false)
+                Toast.makeText(this, getString(R.string.openai_save_key_first), Toast.LENGTH_LONG).show()
+            } else {
+                prefs.aiCommandsEnabled = checked
+            }
+        }
+        binding.buttonSaveOpenAi.setOnClickListener { saveOpenAiSettings() }
+        binding.buttonClearOpenAi.setOnClickListener {
+            prefs.clearOpenAiApiKey()
+            prefs.aiCommandsEnabled = false
+            binding.editOpenAiApiKey.setText("")
+            setAiSwitch(false)
+            refreshOpenAiStatus()
+            Toast.makeText(this, getString(R.string.openai_key_deleted), Toast.LENGTH_SHORT).show()
+        }
+        binding.buttonTestOpenAi.setOnClickListener { testOpenAiConnection() }
+
         binding.buttonShowCommands.setOnClickListener { showVoiceCommands() }
+        binding.buttonSelectTtsEngine.setOnClickListener { showTtsEnginePicker() }
+        binding.buttonSelectTtsSpeed.setOnClickListener { showTtsSpeedPicker() }
         binding.buttonTestSpeech.setOnClickListener {
             restoreSpeechOutput(runTest = true, showToast = true)
         }
@@ -152,7 +186,6 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             startVoiceTest()
         }
 
-        if (prefs.voiceResponsesEnabled) restoreSpeechOutput(runTest = false, showToast = false)
         refreshStatus()
     }
 
@@ -180,6 +213,70 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
         runOnUiThread { refreshStatus() }
+    }
+
+    private fun setAiSwitch(enabled: Boolean) {
+        suppressAiSwitchCallback = true
+        binding.switchAiCommands.isChecked = enabled
+        suppressAiSwitchCallback = false
+    }
+
+    private fun saveOpenAiSettings(): Boolean {
+        val model = binding.editOpenAiModel.text?.toString()?.trim().orEmpty()
+        if (model.isNotEmpty()) prefs.openAiModel = model
+
+        val key = binding.editOpenAiApiKey.text?.toString()?.trim().orEmpty()
+        if (key.isNotEmpty()) {
+            return try {
+                prefs.saveOpenAiApiKey(key)
+                binding.editOpenAiApiKey.setText("")
+                refreshOpenAiStatus()
+                Toast.makeText(this, getString(R.string.openai_saved), Toast.LENGTH_SHORT).show()
+                true
+            } catch (error: Exception) {
+                Toast.makeText(this, getString(R.string.openai_save_failed, error.message ?: "error"), Toast.LENGTH_LONG).show()
+                false
+            }
+        }
+
+        if (!prefs.hasOpenAiApiKey()) {
+            Toast.makeText(this, getString(R.string.openai_enter_key), Toast.LENGTH_LONG).show()
+            return false
+        }
+        refreshOpenAiStatus()
+        return true
+    }
+
+    private fun testOpenAiConnection() {
+        if (!saveOpenAiSettings()) return
+        binding.buttonTestOpenAi.isEnabled = false
+        binding.textOpenAiStatus.text = getString(R.string.openai_status_checking)
+        ioExecutor.execute {
+            val result = AasRuntime.aiPlanner.testConnection()
+            if (destroyed) return@execute
+            runOnUiThread {
+                binding.buttonTestOpenAi.isEnabled = true
+                binding.textOpenAiStatus.text = if (result.success) {
+                    getString(R.string.openai_status_ready, prefs.openAiModel)
+                } else {
+                    getString(R.string.openai_status_error, result.message)
+                }
+                Toast.makeText(this, result.message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun refreshOpenAiStatus() {
+        val hasKey = prefs.hasOpenAiApiKey()
+        setAiSwitch(prefs.aiCommandsEnabled && hasKey)
+        if (!binding.editOpenAiModel.hasFocus() && binding.editOpenAiModel.text?.toString() != prefs.openAiModel) {
+            binding.editOpenAiModel.setText(prefs.openAiModel)
+        }
+        binding.textOpenAiStatus.text = when {
+            !hasKey -> getString(R.string.openai_status_not_configured)
+            prefs.aiCommandsEnabled -> getString(R.string.openai_status_ready, prefs.openAiModel)
+            else -> getString(R.string.openai_status_saved_disabled, prefs.openAiModel)
+        }
     }
 
     private fun setNativeAssistantDisabled(disabled: Boolean) {
@@ -322,6 +419,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.switchDisableNativeAssistant.isChecked = prefs.nativeAssistantDisabled
         suppressNativeAssistantCallback = false
         setVehicleWriteSwitch(prefs.vehicleWritesEnabled)
+        binding.switchSeatFiveLevels.isChecked = prefs.seatMaxLevel >= 5
         binding.textActivationKey.text = getString(R.string.activation_key, prefs.activationKeyCode)
         binding.textLastTranscript.text = prefs.lastTranscript
         binding.textLastResult.text = prefs.lastResult
@@ -329,6 +427,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.buttonSelectNavigationApp.text = getString(R.string.selected_navigation_app, selectedAppLabel(prefs.navigationPackage))
         binding.buttonSelectYoutubeApp.text = getString(R.string.selected_youtube_app, selectedAppLabel(prefs.youtubePackage))
         binding.buttonSelectRadioApp.text = getString(R.string.selected_radio_app, selectedAppLabel(prefs.radioPackage))
+        refreshTtsStatus()
+        refreshOpenAiStatus()
         binding.buttonCaptureKey.text = if (AasAccessibilityService.learnMode || prefs.captureNextKey) {
             getString(R.string.press_steering_button)
         } else {
@@ -407,6 +507,98 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             .show()
     }
 
+
+    private data class TtsEngineChoice(val packageName: String, val label: String)
+
+    private fun installedTtsEngines(): List<TtsEngineChoice> {
+        val services = runCatching {
+            @Suppress("DEPRECATION")
+            packageManager.queryIntentServices(
+                Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE),
+                PackageManager.MATCH_ALL
+            )
+        }.getOrDefault(emptyList())
+
+        return services.mapNotNull { info ->
+            val packageName = info.serviceInfo?.packageName ?: return@mapNotNull null
+            val label = runCatching {
+                val appInfo = packageManager.getApplicationInfo(packageName, 0)
+                packageManager.getApplicationLabel(appInfo).toString()
+            }.getOrDefault(packageName)
+            TtsEngineChoice(packageName, label)
+        }.distinctBy { it.packageName }.sortedWith(
+            compareBy<TtsEngineChoice> { it.packageName != SpeechOutput.RHVOICE_PACKAGE }
+                .thenBy { it.label.lowercase() }
+        )
+    }
+
+    private fun showTtsEnginePicker() {
+        val engines = installedTtsEngines()
+        val choices = listOf(TtsEngineChoice("", getString(R.string.tts_engine_auto))) + engines
+        val labels = choices.map { choice ->
+            if (choice.packageName == SpeechOutput.RHVOICE_PACKAGE) {
+                "${choice.label} — ${getString(R.string.rhvoice_recommended)}\n${choice.packageName}"
+            } else if (choice.packageName.isBlank()) {
+                choice.label
+            } else {
+                "${choice.label}\n${choice.packageName}"
+            }
+        }.map { it as CharSequence }.toTypedArray()
+        val checked = choices.indexOfFirst { it.packageName == prefs.ttsEnginePackage }.coerceAtLeast(0)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.tts_engine_picker_title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                prefs.ttsEnginePackage = choices[which].packageName
+                AasRuntime.voice.reinitializeTts()
+                dialog.dismiss()
+                refreshTtsStatus()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun showTtsSpeedPicker() {
+        val rates = floatArrayOf(0.85f, 0.95f, 1.0f, 1.05f, 1.15f, 1.25f)
+        val labels = rates.map { String.format(java.util.Locale.US, "%.2f×", it) as CharSequence }.toTypedArray()
+        var checked = 0
+        var closestDistance = Float.MAX_VALUE
+        rates.forEachIndexed { index, rate ->
+            val distance = kotlin.math.abs(rate - prefs.ttsSpeechRate)
+            if (distance < closestDistance) {
+                closestDistance = distance
+                checked = index
+            }
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.tts_speed_picker_title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                prefs.ttsSpeechRate = rates[which]
+                AasRuntime.voice.reinitializeTts()
+                dialog.dismiss()
+                refreshTtsStatus()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun refreshTtsStatus() {
+        val selected = prefs.ttsEnginePackage
+        val engines = installedTtsEngines()
+        val selectedEngine = engines.firstOrNull { it.packageName == selected }
+        val status = when {
+            selected.isBlank() -> getString(R.string.tts_engine_auto_status)
+            selectedEngine != null -> getString(R.string.tts_engine_selected, selectedEngine.label)
+            else -> getString(R.string.tts_engine_missing)
+        }
+        binding.textTtsEngineStatus.text = status
+        binding.buttonSelectTtsSpeed.text = getString(
+            R.string.tts_speed_value,
+            String.format(java.util.Locale.US, "%.2f", prefs.ttsSpeechRate)
+        )
+        binding.buttonSelectTtsEngine.isEnabled = true
+    }
+
     private fun selectedAppLabel(packageName: String): String {
         if (packageName.isBlank()) return getString(R.string.auto_select)
         return try {
@@ -446,19 +638,27 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     }
 
     private fun russianCommandHelp(): String = ("""
+AI-РЕЖИМ (при сохранённом API key)
+• «Мне жарко» — климат 20 °C и вентилятор 4
+• «Мне холодно» — климат 24 °C и вентилятор 2
+• «Выключи климат, закрой окна и включи музыку» — команды выполняются по очереди
+• Если OpenAI недоступен, AAS автоматически использует обычные команды ниже.
+
 КЛИМАТ
 • «Включи климат» / «Выключи климат»
 • «Авто климат» / «Выключи авто климат»
 • «Температура 22 градуса»
 • «Вентилятор 3» или «Обдув салона 3»
 • «Рециркуляция» / «Воздух с улицы»
+• «Включи вентиляцию без охлаждения» / «Выключи вентиляцию климата»
+• «Включи обдув лобового стекла» / «Выключи обдув лобового»
 • «Обогрев заднего стекла» / «Выключи обогрев зеркал»
 
 СИДЕНЬЯ И РУЛЬ
-• «Обогрев водительского / пассажирского сиденья 1–5»
-• «Вентиляция водительского / пассажирского сиденья 1–5»
-• «Обогрев всех сидений минимум / средний / максимум» (1 / 3 / 5)
-• «Вентиляция всех сидений минимум / средний / максимум» (1 / 3 / 5)
+• «Обогрев водительского / пассажирского сиденья 1–3» или 1–5 при включённой настройке пяти уровней
+• «Вентиляция водительского / пассажирского сиденья 1–3» или 1–5 при включённой настройке пяти уровней
+• «Обогрев всех сидений минимум / средний / максимум» — уровень зависит от выбранного диапазона
+• «Вентиляция всех сидений минимум / средний / максимум» — уровень зависит от выбранного диапазона
 • «Выключи обогрев / вентиляцию водительского, пассажирского или всех сидений»
 • «Подогрев руля 1–3» / «Выключи подогрев руля»
 Примечание: «все сиденья» — водительское и переднее пассажирское.
@@ -468,6 +668,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 • «Открой / закрой заднее левое или заднее правое окно»
 • «Открой / закрой передние, задние или все окна»
 • «Установи водительское окно на 40 процентов» — поддерживаются все окна и группы, 0–100%
+• «Проветри все окна» — открытие на 10%
+• «Открой передние окна наполовину» — открытие на 50%
 • «Открой люк» / «Закрой люк» / «Люк стоп»
 • «Люк проветривание» / «Люк комфорт» / «Приподними люк»
 • «Открой шторку» / «Закрой шторку»
@@ -504,7 +706,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 • «Пауза» / «Следующий трек» / «Предыдущий трек»
 • «Открой музыку» / «Открой YouTube» / «Открой радио»
 • «YouTube Linkin Park» / «Ютуб обзор BYD Seal» — поиск в выбранном YouTube ReVanced
-• «Найди на YouTube ремонт подвески» — альтернативная форма поиска
+• «Найди на YouTube ремонт подвески» — открыть результаты поиска
+• «Включи на YouTube Linkin Park Numb» — попытка сразу запустить верхний результат
+• «Найди песню Кино Группа крови» / «Включи песню Кино Группа крови»
 • «На главный экран»
 
 НАВИГАЦИЯ
@@ -517,19 +721,27 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 """.trimIndent() + "\n\n" + technicalCommandHelp(ukrainian = false))
 
     private fun ukrainianCommandHelp(): String = ("""
+AI-РЕЖИМ (зі збереженим API key)
+• «Мені спекотно» — клімат 20 °C і вентилятор 4
+• «Мені холодно» — клімат 24 °C і вентилятор 2
+• «Вимкни клімат, закрий вікна та увімкни музику» — команди виконуються по черзі
+• Якщо OpenAI недоступний, AAS автоматично використовує звичайні команди нижче.
+
 КЛІМАТ
 • «Увімкни клімат» / «Вимкни клімат»
 • «Авто клімат» / «Вимкни авто клімат»
 • «Температура 22 градуси»
 • «Вентилятор 3» або «Обдув салону 3»
 • «Рециркуляція» / «Повітря з вулиці»
+• «Увімкни вентиляцію без охолодження» / «Вимкни вентиляцію клімату»
+• «Увімкни обдув лобового скла» / «Вимкни обдув лобового»
 • «Обігрів заднього скла» / «Вимкни обігрів дзеркал»
 
 СИДІННЯ ТА КЕРМО
-• «Підігрів водійського / пасажирського сидіння 1–5»
-• «Вентиляція водійського / пасажирського сидіння 1–5»
-• «Підігрів усіх сидінь мінімум / середній / максимум» (1 / 3 / 5)
-• «Вентиляція всіх сидінь мінімум / середній / максимум» (1 / 3 / 5)
+• «Підігрів водійського / пасажирського сидіння 1–3» або 1–5 з увімкненим режимом п’яти рівнів
+• «Вентиляція водійського / пасажирського сидіння 1–3» або 1–5 з увімкненим режимом п’яти рівнів
+• «Підігрів усіх сидінь мінімум / середній / максимум» — рівень залежить від обраного діапазону
+• «Вентиляція всіх сидінь мінімум / середній / максимум» — рівень залежить від обраного діапазону
 • «Вимкни підігрів / вентиляцію водійського, пасажирського або всіх сидінь»
 • «Підігрів керма 1–3» / «Вимкни підігрів керма»
 Примітка: «усі сидіння» — водійське та переднє пасажирське.
@@ -539,6 +751,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 • «Відкрий / закрий заднє ліве або заднє праве вікно»
 • «Відкрий / закрий передні, задні або всі вікна»
 • «Встанови водійське вікно на 40 відсотків» — підтримуються всі вікна та групи, 0–100%
+• «Провітри всі вікна» — відкриття на 10%
+• «Відкрий передні вікна наполовину» — відкриття на 50%
 • «Відкрий люк» / «Закрий люк» / «Люк стоп»
 • «Люк провітрювання» / «Люк комфорт» / «Підніми люк»
 • «Відкрий шторку» / «Закрий шторку»
@@ -575,7 +789,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 • «Пауза» / «Наступний трек» / «Попередній трек»
 • «Відкрий музику» / «Відкрий YouTube» / «Відкрий радіо»
 • «YouTube Linkin Park» / «Ютуб огляд BYD Seal» — пошук у вибраному YouTube ReVanced
-• «Знайди на YouTube ремонт підвіски» — альтернативна форма пошуку
+• «Знайди на YouTube ремонт підвіски» — відкрити результати пошуку
+• «Увімкни на YouTube Linkin Park Numb» — спроба відразу запустити верхній результат
+• «Знайди пісню Океан Ельзи» / «Увімкни пісню Океан Ельзи»
 • «На головний екран»
 
 НАВІГАЦІЯ
@@ -650,22 +866,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     private fun restoreSpeechOutput(runTest: Boolean, showToast: Boolean) {
         binding.buttonTestSpeech.isEnabled = false
-        ioExecutor.execute {
-            val boot = AasRuntime.bootstrap.ensureRunning(enableAccessibility = false)
-            val engineEnabled = boot.connected && AasRuntime.helper.ensureTtsEngineEnabled()
-            if (destroyed) return@execute
-            runOnUiThread {
-                binding.buttonTestSpeech.isEnabled = true
-                AasRuntime.voice.reinitializeTts()
-                if (runTest) {
-                    mainHandler.postDelayed({ AasRuntime.voice.testSpeech() }, 800L)
-                }
-                if (showToast) {
-                    val message = if (engineEnabled) R.string.tts_engine_restored else R.string.tts_engine_fallback
-                    Toast.makeText(this, getString(message), Toast.LENGTH_LONG).show()
-                }
-            }
-        }
+        AasRuntime.voice.reinitializeTts()
+        mainHandler.postDelayed({
+            if (destroyed) return@postDelayed
+            binding.buttonTestSpeech.isEnabled = true
+            if (runTest) AasRuntime.voice.testSpeech()
+            if (showToast) Toast.makeText(this, getString(R.string.tts_reinitialized), Toast.LENGTH_LONG).show()
+        }, 650L)
     }
 
 

@@ -3,8 +3,8 @@ package com.aas.app.vehicle
 /**
  * AAS copy of every explicit WriteEntry declared in the supplied BYDMate
  * WriteAllowlist.kt. This list intentionally does not invent or scan unknown
- * vehicle identifiers. The 123 entries mentioned in the source comments live
- * in a separate competitor-actions.json and are not present in the supplied file.
+ * vehicle identifiers. A small number of explicit actions imported from the
+ * supplied BYDMate competitor-actions.json are marked unvalidated.
  */
 internal object BydWriteAllowlist {
     data class Entry(
@@ -29,6 +29,10 @@ internal object BydWriteAllowlist {
         Entry("ac_temp_main", 1000, 501219368, 16, 30, "climate", true, "live-leopard3-2026-05-28"),
         Entry("ac_cycle_inner", 1000, 501219355, 1, 1, "climate", true, "live-leopard3-2026-05-28"),
         Entry("ac_cycle_outer", 1000, 501219355, 0, 0, "climate", true, "live-leopard3-2026-06-28"),
+        Entry("ac_flow_only_off", 1000, 501219394, 0, 0, "climate", false, "competitor-v80"),
+        Entry("ac_flow_only_on", 1000, 501219394, 1, 1, "climate", false, "competitor-v80"),
+        Entry("defrost_front_off", 1000, 501219362, 0, 0, "climate", false, "competitor-v80"),
+        Entry("defrost_front_on", 1000, 501219362, 1, 1, "climate", false, "competitor-v80"),
         Entry("window_driver_open", 1001, 1125122104, 1, 1, "windows", true, "live-leopard3-2026-05-28"),
         Entry("window_driver_close", 1001, 1125122104, 2, 2, "windows", true, "live-leopard3-2026-05-28"),
         Entry("window_passenger_open", 1001, 1125122107, 1, 1, "windows", true, "live-leopard3-2026-05-28"),

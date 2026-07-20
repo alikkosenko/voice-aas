@@ -117,6 +117,18 @@ class BydVehicleAdapter(
             VoiceCommand.RearDefrostOff -> withWritesEnabled {
                 writeSingle(BydParameterCatalog.rearDefrost, 0, "Обогрев заднего стекла выключен", "rear defrost off")
             }
+            VoiceCommand.FrontDefrostOn -> withWritesEnabled {
+                writeSingle(BydParameterCatalog.frontDefrost, 1, "Обдув лобового стекла включён", "front defrost on")
+            }
+            VoiceCommand.FrontDefrostOff -> withWritesEnabled {
+                writeSingle(BydParameterCatalog.frontDefrost, 0, "Обдув лобового стекла выключен", "front defrost off")
+            }
+            VoiceCommand.ClimateFlowOnlyOn -> withWritesEnabled {
+                writeSingle(BydParameterCatalog.climateFlowOnly, 1, "Вентиляция без охлаждения включена", "climate flow only on")
+            }
+            VoiceCommand.ClimateFlowOnlyOff -> withWritesEnabled {
+                writeSingle(BydParameterCatalog.climateFlowOnly, 0, "Вентиляция без охлаждения выключена", "climate flow only off")
+            }
             is VoiceCommand.SetSunroof -> withWritesEnabled { setSunroof(command.action) }
             is VoiceCommand.SetSunshade -> withWritesEnabled { setStationarySingle(
                 BydParameterCatalog.sunshadeCommand,
@@ -439,119 +451,58 @@ class BydVehicleAdapter(
         if (seat == VoiceCommand.Seat.ALL) {
             val driver = setSeatLevel(VoiceCommand.Seat.DRIVER, requestedLevel, ventilation)
             val passenger = setSeatLevel(VoiceCommand.Seat.PASSENGER, requestedLevel, ventilation)
-            return if (driver.success && passenger.success) {
-                val spoken = if (requestedLevel <= 0) {
-                    if (ventilation) "Вентиляция всех сидений выключена" else "Обогрев всех сидений выключен"
-                } else {
-                    val mode = if (ventilation) "Вентиляция" else "Обогрев"
-                    "$mode всех сидений, уровень ${requestedLevel.coerceIn(1, 5)}"
-                }
-                success(spoken, driver.technicalMessage + "; " + passenger.technicalMessage)
+            return if (driver.success || passenger.success) {
+                success(
+                    "Команда сидений выполнена",
+                    driver.technicalMessage + "; " + passenger.technicalMessage
+                )
             } else {
-                failure("Не удалось изменить режим всех сидений", driver.technicalMessage + "; " + passenger.technicalMessage)
+                failure(
+                    "Не удалось изменить режим всех сидений",
+                    driver.technicalMessage + "; " + passenger.technicalMessage
+                )
             }
         }
 
-        val level = requestedLevel.coerceIn(0, 5)
+        val maxLevel = if (prefs.seatMaxLevel >= 5) 5 else 3
+        val level = requestedLevel.coerceIn(0, maxLevel)
         val target = seatParameters(seat, ventilation)
-        val seatName = if (seat == VoiceCommand.Seat.DRIVER) "водительского" else "пассажирского"
-        val mode = if (ventilation) "Вентиляция" else "Обогрев"
         val diagnostics = mutableListOf<String>()
 
-        val applied = when (seatChannelWinner()) {
-            SeatChannel.PRIMARY -> applyPrimarySeatChannel(target, level, diagnostics)
-            SeatChannel.FALLBACK -> applyFallbackSeatChannel(target, level, diagnostics)
-            SeatChannel.UNKNOWN -> probeSeatChannel(target, level, diagnostics)
-        }
-
-        if (!applied) {
-            return failure("Не удалось изменить режим сиденья", diagnostics.joinToString("; "))
-        }
-
-        val spoken = if (level == 0) {
-            "$mode $seatName сиденья выключен"
+        // Different BYD/DiLink generations expose one of two seat-control
+        // contracts. A transport status of 1 is not sufficient to identify the
+        // physically active contract, so write the same requested state to both.
+        // The values are equivalent and therefore do not fight each other.
+        var primaryAccepted = false
+        if (level == 0) {
+            val primary = write(target.switch, 2) // primary: 2 = off
+            diagnostics += "primary switch(value=2)=${describe(primary)}"
+            primaryAccepted = primary.error == null && primary.status >= 0
         } else {
-            "$mode $seatName сиденья, уровень $level"
-        }
-        return success(spoken, diagnostics.joinToString("; "))
-    }
-
-    /**
-     * Primary Leopard-3 channel: switch first, then level. Off is switch=2.
-     * A status of 0 is a silent no-op and must not be reported as success.
-     */
-    private fun applyPrimarySeatChannel(
-        target: SeatParameters,
-        level: Int,
-        diagnostics: MutableList<String>
-    ): Boolean {
-        val switchValue = if (level == 0) 2 else 1
-        val switch = write(target.switch, switchValue)
-        val outcome = seatOutcome(switch)
-        diagnostics += "primary switch(value=$switchValue)=${describe(switch)} outcome=$outcome"
-        if (outcome != SeatWriteOutcome.REAL) return false
-
-        if (level > 0) {
+            // Apply level first, then switch. Several DiLink climate builds only
+            // commit the staged level when the enable edge follows it.
             val stage = write(target.level, level)
-            diagnostics += "primary level(value=$level)=${describe(stage)} outcome=${seatOutcome(stage)}"
+            diagnostics += "primary level(value=$level)=${describe(stage)}"
+            val primary = write(target.switch, 1) // primary: 1 = on
+            diagnostics += "primary switch(value=1)=${describe(primary)}"
+            primaryAccepted = stage.error == null && primary.error == null &&
+                (stage.status >= 0 || primary.status >= 0)
         }
-        return true
-    }
 
-    /** Fallback competitor channel: 1=off, 2=level1 ... 6=level5. */
-    private fun applyFallbackSeatChannel(
-        target: SeatParameters,
-        level: Int,
-        diagnostics: MutableList<String>
-    ): Boolean {
-        val value = if (level == 0) 1 else level + 1
-        val result = write(target.fallback, value)
-        val outcome = seatOutcome(result)
-        diagnostics += "fallback(value=$value)=${describe(result)} outcome=$outcome"
-        return outcome == SeatWriteOutcome.REAL
-    }
+        val fallbackValue = if (level == 0) 1 else level + 1 // 1=off, 2..6=levels 1..5
+        val fallback = write(target.fallback, fallbackValue)
+        diagnostics += "fallback(value=$fallbackValue)=${describe(fallback)}"
+        val fallbackAccepted = fallback.error == null && fallback.status >= 0
 
-    /**
-     * Probe the validated primary channel first. Fallback is tried only when the
-     * primary reports a real no-op/permanent denial, never simultaneously. This
-     * prevents the two different BYD seat protocols from fighting each other.
-     */
-    private fun probeSeatChannel(
-        target: SeatParameters,
-        level: Int,
-        diagnostics: MutableList<String>
-    ): Boolean {
-        val switchValue = if (level == 0) 2 else 1
-        val primarySwitch = write(target.switch, switchValue)
-        val primaryOutcome = seatOutcome(primarySwitch)
-        diagnostics += "probe primary switch(value=$switchValue)=${describe(primarySwitch)} outcome=$primaryOutcome"
+        // Forget any winner cached by previous versions; it may have been selected
+        // from a false-positive transport status rather than physical actuation.
+        setSeatChannelWinner(SeatChannel.UNKNOWN)
 
-        if (primaryOutcome == SeatWriteOutcome.REAL) {
-            setSeatChannelWinner(SeatChannel.PRIMARY)
-            if (level > 0) {
-                val stage = write(target.level, level)
-                diagnostics += "probe primary level(value=$level)=${describe(stage)} outcome=${seatOutcome(stage)}"
-            }
-            return true
+        return if (primaryAccepted || fallbackAccepted) {
+            success("Команда сиденья отправлена", diagnostics.joinToString("; "))
+        } else {
+            failure("Не удалось изменить режим сиденья", diagnostics.joinToString("; "))
         }
-        if (primaryOutcome == SeatWriteOutcome.TRANSIENT) return false
-
-        // Probe fallback with stage 1 because it is valid on both 3-stage and
-        // 5-stage trims. Apply a higher requested stage only after the channel
-        // itself has proved effective.
-        val probeValue = if (level == 0) 1 else 2
-        val fallbackProbe = write(target.fallback, probeValue)
-        val fallbackOutcome = seatOutcome(fallbackProbe)
-        diagnostics += "probe fallback(value=$probeValue)=${describe(fallbackProbe)} outcome=$fallbackOutcome"
-        if (fallbackOutcome != SeatWriteOutcome.REAL) return false
-
-        setSeatChannelWinner(SeatChannel.FALLBACK)
-        if (level > 1) {
-            val requestedValue = level + 1
-            val apply = write(target.fallback, requestedValue)
-            diagnostics += "fallback stage(value=$requestedValue)=${describe(apply)} outcome=${seatOutcome(apply)}"
-        }
-        return true
     }
 
     private data class SeatParameters(
@@ -739,7 +690,7 @@ class BydVehicleAdapter(
     private data class WindowWriteResult(val accepted: Boolean, val technical: String)
 
     private companion object {
-        const val SEAT_CHANNEL_SCHEMA_VERSION = 2
+        const val SEAT_CHANNEL_SCHEMA_VERSION = 3
         const val KEY_SEAT_CHANNEL_VERSION = "schema_version"
         const val KEY_SEAT_CHANNEL_FINGERPRINT = "build_fingerprint"
         const val KEY_SEAT_CHANNEL = "winner"

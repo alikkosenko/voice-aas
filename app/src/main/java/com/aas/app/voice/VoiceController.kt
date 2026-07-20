@@ -11,9 +11,12 @@ import com.aas.app.AppPrefs
 import com.aas.app.R
 import com.aas.app.UkrainianTranslator
 import com.aas.app.accessibility.AasAccessibilityService
+import com.aas.app.ai.OpenAiCommandPlanner
 import com.aas.app.commands.CommandDispatcher
 import com.aas.app.commands.CommandParser
 import com.aas.app.commands.ExecutionResult
+import com.aas.app.commands.LocalCommandPlanner
+import com.aas.app.commands.VoiceCommand
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -25,42 +28,53 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
- * One-shot, fully offline voice controller powered by Vosk.
+ * One-shot voice controller powered by offline Vosk recognition.
  *
- * The selected Vosk model is unpacked from APK assets on first use. No Android
- * SpeechRecognizer service, Google services, network connection or downloaded
- * Android language pack is required at runtime.
+ * Recognition remains local. Direct and fully recognized compound commands are
+ * parsed and executed locally first. OpenAI receives the transcript only when the
+ * built-in parser cannot produce a complete, unambiguous command plan.
  */
 class VoiceController(
     context: Context,
     private val prefs: AppPrefs,
     private val dispatcher: CommandDispatcher,
+    private val aiPlanner: OpenAiCommandPlanner,
     private val onStateChanged: (String) -> Unit,
     private val onFinished: () -> Unit
 ) : RecognitionListener {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val commandExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val parser = CommandParser()
+    private val parser = CommandParser { prefs.seatMaxLevel }
+    private val localPlanner = LocalCommandPlanner(parser)
+    private val speechOutput = SpeechOutput(appContext, prefs)
+    @Volatile private var voiceResponsesEnabled = prefs.voiceResponsesEnabled
+    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _: SharedPreferences?, key: String? ->
+        when (key) {
+            AppPrefs.KEY_VOICE_RESPONSES_ENABLED -> {
+                val enabled = prefs.voiceResponsesEnabled
+                voiceResponsesEnabled = enabled
+                speechOutput.setEnabled(enabled)
+            }
+            AppPrefs.KEY_TTS_ENGINE_PACKAGE,
+            AppPrefs.KEY_TTS_SPEECH_RATE,
+            AppPrefs.KEY_LANGUAGE -> speechOutput.reinitialize()
+        }
+    }
 
     @Volatile private var model: Model? = null
     @Volatile private var loadedLanguageTag: String? = null
     private var speechService: SpeechService? = null
     private var recognizer: Recognizer? = null
-    private val speechOutput = SpeechOutput(appContext, prefs)
-    @Volatile private var voiceResponsesEnabled = prefs.voiceResponsesEnabled
-    private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == AppPrefs.KEY_VOICE_RESPONSES_ENABLED) {
-            val enabled = prefs.voiceResponsesEnabled
-            voiceResponsesEnabled = enabled
-            speechOutput.setEnabled(enabled)
-        }
-    }
     private var state = State.IDLE
     private var sessionGeneration = 0L
     private var lastPartial = ""
     private var listenAfterPreload = false
     @Volatile private var destroyed = false
+
+    init {
+        prefs.sharedPreferences().registerOnSharedPreferenceChangeListener(preferenceListener)
+    }
 
     private val timeout = Runnable {
         if (state != State.LISTENING) return@Runnable
@@ -74,9 +88,6 @@ class VoiceController(
         }
     }
 
-    init {
-        prefs.sharedPreferences().registerOnSharedPreferenceChangeListener(preferenceListener)
-    }
 
     fun preload() {
         mainHandler.post {
@@ -141,6 +152,7 @@ class VoiceController(
 
     private fun listenOnceInternal() {
         if (destroyed) return
+        speechOutput.stop()
         AasAccessibilityService.showPreparingOverlay()
         if (state == State.PRELOADING_MODEL) {
             listenAfterPreload = true
@@ -332,15 +344,8 @@ class VoiceController(
         onStateChanged(t(R.string.state_executing))
         val generation = sessionGeneration
 
-        val command = parser.parse(normalizedTranscript)
-        if (command == null) {
-            finishWith(t(R.string.unsupported_command))
-            return
-        }
-
         commandExecutor.execute {
-            val result = runCatching { dispatcher.execute(command) }
-                .getOrElse { ExecutionResult(false, t(R.string.execution_error), it.stackTraceToString()) }
+            val result = buildAndExecutePlan(normalizedTranscript)
 
             mainHandler.post {
                 if (destroyed || generation != sessionGeneration || state != State.PROCESSING) {
@@ -357,6 +362,77 @@ class VoiceController(
             }
         }
     }
+
+
+    private fun buildAndExecutePlan(transcript: String): ExecutionResult {
+        val localPlan = localPlanner.plan(transcript)
+        var plannerTechnical = localPlan.technicalMessage
+
+        val commands: List<VoiceCommand> = when {
+            localPlan.commands.isNotEmpty() && localPlan.complete -> {
+                localPlan.commands
+            }
+            aiPlanner.isConfigured() -> {
+                try {
+                    val plan = aiPlanner.plan(transcript)
+                    plannerTechnical = "${localPlan.technicalMessage}; AI fallback: ${plan.technicalMessage}"
+                    if (plan.commands.isNotEmpty()) {
+                        plan.commands
+                    } else {
+                        emptyList()
+                    }
+                } catch (error: Exception) {
+                    plannerTechnical = "${localPlan.technicalMessage}; AI fallback failed: ${error.message}"
+                    emptyList()
+                }
+            }
+            else -> {
+                plannerTechnical = "${localPlan.technicalMessage}; AI unavailable"
+                emptyList()
+            }
+        }
+
+        if (commands.isEmpty()) {
+            return ExecutionResult(
+                success = false,
+                spokenMessage = t(R.string.unsupported_command),
+                technicalMessage = "${t(R.string.unsupported_command)}; $plannerTechnical"
+            )
+        }
+
+        val results = mutableListOf<ExecutionResult>()
+        for ((index, command) in commands.withIndex()) {
+            val result = runCatching { dispatcher.execute(command) }
+                .getOrElse { ExecutionResult(false, t(R.string.execution_error), it.stackTraceToString()) }
+            results += result
+            if (index < commands.lastIndex) Thread.sleep(COMMAND_GAP_MS)
+        }
+
+        val allSucceeded = results.all { it.success }
+        val completed = results.count { it.success }
+        val summary = if (commands.size == 1) {
+            results.first().spokenMessage
+        } else if (allSucceeded) {
+            "Выполнено команд: ${commands.size}"
+        } else {
+            "Выполнено $completed из ${commands.size} команд"
+        }
+        val technical = buildString {
+            append(plannerTechnical)
+            results.forEachIndexed { index, item ->
+                append("\n#")
+                append(index + 1)
+                append(' ')
+                append(commands[index]::class.simpleName ?: commands[index].toString())
+                append(": success=")
+                append(item.success)
+                append("; ")
+                append(item.technicalMessage)
+            }
+        }
+        return ExecutionResult(allSucceeded, summary, technical)
+    }
+
 
     private fun finishWith(message: String, speak: Boolean = true) {
         mainHandler.removeCallbacks(timeout)
@@ -394,22 +470,21 @@ class VoiceController(
         recognizer = null
     }
 
-    /** Applies the UI switch to the process-wide speech-output controller. */
+    /** Applies the settings switch to the process-wide TTS controller. */
     fun setVoiceResponsesEnabled(enabled: Boolean) {
         voiceResponsesEnabled = enabled
         prefs.voiceResponsesEnabled = enabled
         speechOutput.setEnabled(enabled)
     }
 
-    /** Re-enumerates installed TTS engines and recreates the active one. */
+    /** Recreates the selected Android TTS engine and reloads locale/rate. */
     fun reinitializeTts() {
         speechOutput.reinitialize()
     }
 
-    /** User-visible diagnostic. */
     fun testSpeech() {
         setVoiceResponsesEnabled(true)
-        speakResult(t(R.string.tts_test_phrase), success = true)
+        speak(t(R.string.tts_test_phrase))
     }
 
     fun stopSpeaking() {
@@ -462,6 +537,7 @@ class VoiceController(
     companion object {
         private const val TAG = "AasVoiceController"
         private const val SAMPLE_RATE = 16_000.0f
-        private const val LISTEN_TIMEOUT_MS = 15_000L
+        private const val LISTEN_TIMEOUT_MS = 30_000L
+        private const val COMMAND_GAP_MS = 220L
     }
 }

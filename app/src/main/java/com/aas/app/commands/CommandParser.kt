@@ -5,7 +5,7 @@ import kotlin.math.abs
 import kotlin.math.min
 
 /** Bilingual RU/UK command parser with tolerant matching for Vosk hypotheses. */
-class CommandParser {
+class CommandParser(private val seatMaxLevelProvider: () -> Int = { 3 }) {
     fun parse(raw: String): VoiceCommand? {
         val rawTechnical = raw.trim().lowercase(Locale.ROOT)
         Regex(
@@ -39,6 +39,7 @@ class CommandParser {
         // the complete search query: "ютуб linkin park", "YouTube огляд BYD".
         // This is intentionally parsed before generic multimedia commands.
         parseYoutubeCommand(text)?.let { return it }
+        parseMusicCommand(text)?.let { return it }
 
         // Navigation with natural Russian and Ukrainian prefixes.
         val navPrefixes = listOf(
@@ -86,6 +87,20 @@ class CommandParser {
 
         if (has("блютус", "блютуз", "bluetooth")) return VoiceCommand.SetBluetooth(!offWord())
         if (has("вай фай", "вайфай", "wi fi", "wifi")) return VoiceCommand.SetWifi(!offWord())
+
+        if (has(
+                "обдув лобового стекла", "обдув лобового", "обдув переднего стекла", "разморозка лобового",
+                "обдув лобового скла", "обдув переднього скла", "розморожування лобового"
+            )
+        ) return if (offWord()) VoiceCommand.FrontDefrostOff else VoiceCommand.FrontDefrostOn
+
+        if (has(
+                "вентиляция климата", "вентиляция без охлаждения", "вентиляция без кондиционера",
+                "обдув без охлаждения", "обдув без кондиционера", "только вентиляция",
+                "вентиляція клімату", "вентиляція без охолодження", "вентиляція без кондиціонера",
+                "обдув без охолодження", "обдув без кондиціонера", "лише вентиляція"
+            )
+        ) return if (offWord()) VoiceCommand.ClimateFlowOnlyOff else VoiceCommand.ClimateFlowOnlyOn
 
         if (has("авто климат", "автоклимат", "автоматический климат", "автоматичний клімат", "авто режим", "автоматичний режим клімату")) {
             return if (offWord()) VoiceCommand.ClimateAutoOff else VoiceCommand.ClimateAutoOn
@@ -203,15 +218,16 @@ class CommandParser {
         val seatContext = explicitAllSeats || explicitPassengerSeat || explicitDriverSeat || seatMentioned
         val heating = has("обогрев", "подогрев", "подогрей", "согрей", "підігрів", "обігрів", "підігрій", "зігрій", "грелка")
         val ventilation = has("вентиляция", "вентиляцию", "вентиляцію", "вентиляція", "обдув", "проветри сиденье", "провітри сидіння")
-        // BYDMate's validated primary and fallback seat protocols both expose
-        // stages 1..5. Verbal minimum/middle/maximum map to 1/3/5; numeric commands
-        // are passed through exactly, and zero is the explicit off command.
+        // Some BYD climate UIs expose three stages, while the underlying
+        // autoservice channels support five. The user selects the correct range.
+        val seatMaxLevel = if (seatMaxLevelProvider() >= 5) 5 else 3
+        val seatMiddleLevel = if (seatMaxLevel == 5) 3 else 2
         val seatLevel = when {
             offWord() || number == 0 -> 0
-            has("максимум", "максимальный", "максимальная", "максимальний", "максимальна", "на максимум") -> 5
-            has("средний", "средняя", "середній", "середня", "на средний", "на середній") -> 3
+            has("максимум", "максимальный", "максимальная", "максимальний", "максимальна", "на максимум") -> seatMaxLevel
+            has("средний", "средняя", "середній", "середня", "на средний", "на середній") -> seatMiddleLevel
             has("минимум", "минимальный", "минимальная", "мінімум", "мінімальний", "мінімальна", "на минимум", "на мінімум") -> 1
-            else -> (number ?: 1).coerceIn(1, 5)
+            else -> (number ?: 1).coerceIn(1, seatMaxLevel)
         }
         if (seatContext && heating) return VoiceCommand.SetSeatHeating(seat, seatLevel)
         if (seatContext && ventilation) return VoiceCommand.SetSeatVentilation(seat, seatLevel)
@@ -232,6 +248,14 @@ class CommandParser {
             else -> null
         }
         if (window != null) {
+            if (has(
+                    "проветривание", "проветрить", "проветри", "приоткрой", "щель",
+                    "провітрювання", "провітрити", "провітри", "привідкрий", "щілина"
+                )
+            ) return VoiceCommand.SetWindowPosition(window, 10)
+            if (has("наполовину", "на половину", "половина", "половину", "на пів", "напіввідкрий")) {
+                return VoiceCommand.SetWindowPosition(window, 50)
+            }
             if (number in 0..100 && has("процент", "процентов", "процента", "відсоток", "відсотків", "відсотки", "положение", "позиция", "положення")) {
                 return VoiceCommand.SetWindowPosition(window, number!!)
             }
@@ -298,11 +322,13 @@ class CommandParser {
             "открой", "открыть", "запусти", "запустить",
             "відкрий", "відкрити", "запусти", "запустити"
         )
-        val removableQueryPrefixes = listOf(
-            "и найди видео", "и найди", "и включи видео", "и включи",
-            "найди видео", "найди", "найти", "поищи", "поиск", "покажи", "включи видео", "включи",
-            "і знайди відео", "і знайди", "і увімкни відео", "і увімкни",
-            "знайди відео", "знайди", "пошукай", "пошук", "покажи", "увімкни відео", "увімкни"
+        val searchPrefixes = listOf(
+            "и найди видео", "и найди", "найди видео", "найди", "найти", "поищи", "поиск", "покажи",
+            "і знайди відео", "і знайди", "знайди відео", "знайди", "пошукай", "пошук", "покажи"
+        )
+        val playPrefixes = listOf(
+            "и включи видео", "и включи", "включи видео", "включи", "поставь видео", "поставь",
+            "і увімкни відео", "і увімкни", "увімкни відео", "увімкни", "постав відео", "постав"
         )
 
         for (token in youtubeTokens.sortedByDescending { it.length }) {
@@ -310,25 +336,61 @@ class CommandParser {
             if (text.startsWith("$token ")) {
                 var query = text.removePrefix(token).trim()
                 if (query in openOnlyWords) return VoiceCommand.OpenYoutube
-                removableQueryPrefixes.firstOrNull { query == it || query.startsWith("$it ") }?.let { prefix ->
+                playPrefixes.firstOrNull { query == it || query.startsWith("$it ") }?.let { prefix ->
+                    query = query.removePrefix(prefix).trim()
+                    return if (query.isNotEmpty()) VoiceCommand.PlayYoutube(query) else VoiceCommand.OpenYoutube
+                }
+                searchPrefixes.firstOrNull { query == it || query.startsWith("$it ") }?.let { prefix ->
                     query = query.removePrefix(prefix).trim()
                 }
                 return if (query.isNotEmpty()) VoiceCommand.SearchYoutube(query) else VoiceCommand.OpenYoutube
             }
         }
 
-        // Also support natural word order: "найди на ютубе ..." and
-        // "открой YouTube ..." in Russian and Ukrainian.
         val tokenPattern = "(?:youtube|ютуб(?:е|і)?|ютюб(?:е|і)?|ютьюб(?:е|і)?|ю\\s+туб)"
         val requestPattern = Regex(
-            "^(?:открой|открыть|запусти|запустить|найди|найти|поищи|покажи|включи|" +
-                "відкрий|відкрити|запусти|запустити|знайди|пошукай|покажи|увімкни)" +
+            "^(открой|открыть|запусти|запустить|найди|найти|поищи|покажи|включи|поставь|" +
+                "відкрий|відкрити|запусти|запустити|знайди|пошукай|покажи|увімкни|постав)" +
                 "\\s+(?:(?:на|в|у)\\s+)?$tokenPattern\\s+(.+)$"
         )
-        requestPattern.matchEntire(text)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            return VoiceCommand.SearchYoutube(it)
+        requestPattern.matchEntire(text)?.let { match ->
+            val verb = match.groupValues[1]
+            val query = match.groupValues[2].trim()
+            if (query.isNotEmpty()) {
+                val play = verb.startsWith("включ") || verb.startsWith("увімк") || verb.startsWith("постав")
+                return if (play) VoiceCommand.PlayYoutube(query) else VoiceCommand.SearchYoutube(query)
+            }
         }
 
+        return null
+    }
+
+    private fun parseMusicCommand(text: String): VoiceCommand? {
+        val openOnly = setOf(
+            "открой музыку", "открыть музыку", "запусти музыку",
+            "відкрий музику", "відкрити музику", "запусти музику"
+        )
+        if (text in openOnly) return VoiceCommand.OpenMusic
+
+        val searchPatterns = listOf(
+            Regex("""^(?:найди|найти|поищи|покажи|знайди|пошукай)\s+(?:(?:в|у)\s+)?(?:музыке|музыку|музыка|яндекс музыке|яндекс музыка|музиці|музику|музика)\s+(.+)$"""),
+            Regex("""^(?:найди|найти|поищи|знайди|пошукай)\s+(?:трек|песню|пісню)\s+(.+)$""")
+        )
+        searchPatterns.forEach { pattern ->
+            pattern.matchEntire(text)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                return VoiceCommand.SearchMusic(it)
+            }
+        }
+
+        val playPatterns = listOf(
+            Regex("""^(?:включи|поставь|запусти|увімкни|постав)\s+(?:(?:в|у)\s+)?(?:музыке|музыку|музыка|яндекс музыке|яндекс музыка|музиці|музику|музика)\s+(.+)$"""),
+            Regex("""^(?:включи|поставь|запусти|увімкни|постав)\s+(?:трек|песню|пісню)\s+(.+)$""")
+        )
+        playPatterns.forEach { pattern ->
+            pattern.matchEntire(text)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                return VoiceCommand.PlayMusic(it)
+            }
+        }
         return null
     }
 

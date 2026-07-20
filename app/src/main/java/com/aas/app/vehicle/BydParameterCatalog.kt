@@ -20,6 +20,10 @@ internal object BydParameterCatalog {
     val climateAuto = Parameter(device = 1000, fid = 501_219_352)
     val climateRecirculation = Parameter(device = 1000, fid = 501_219_355)
     val rearDefrost = Parameter(device = 1000, fid = 501_219_357)
+    // Imported from BYDMate competitor-actions.json / CommandTranslator.
+    // These channels are firmware-dependent and require an in-car verification.
+    val frontDefrost = Parameter(device = 1000, fid = 501_219_362)
+    val climateFlowOnly = Parameter(device = 1000, fid = 501_219_394)
     val steeringWheelHeat = Parameter(device = 1000, fid = 944_767_029)
     val fridgeMode = Parameter(device = 1023, fid = 850_427_920)
     val fridgeTemperature = Parameter(device = 1023, fid = 850_427_928)

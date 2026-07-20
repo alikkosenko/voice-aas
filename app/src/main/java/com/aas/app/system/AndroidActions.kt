@@ -1,9 +1,12 @@
 package com.aas.app.system
 
+import com.aas.app.accessibility.AasAccessibilityService
+
 import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
+import android.provider.MediaStore
 import android.bluetooth.BluetoothAdapter
 import android.net.wifi.WifiManager
 import android.net.Uri
@@ -266,66 +269,150 @@ class AndroidActions(private val context: Context) {
             return openSelectedApp(preferredPackage, YOUTUBE_PACKAGES, "YouTube открыт")
         }
 
+        val resultsUri = Uri.parse(
+            "https://www.youtube.com/results?search_query=" + Uri.encode(cleanQuery)
+        )
         val candidates = buildList {
             if (preferredPackage.isNotBlank()) add(preferredPackage)
             addAll(YOUTUBE_PACKAGES.filterNot { it == preferredPackage })
         }.distinct()
 
-        val webResultsUri = Uri.Builder()
-            .scheme("https")
-            .authority("www.youtube.com")
-            .path("results")
-            .appendQueryParameter("search_query", cleanQuery)
-            .build()
-        val nativeResultsUri = Uri.Builder()
-            .scheme("vnd.youtube")
-            .authority("results")
-            .appendQueryParameter("search_query", cleanQuery)
-            .build()
-
-        fun Intent.withYoutubeQuery(): Intent = apply {
-            putExtra(SearchManager.QUERY, cleanQuery)
-            putExtra("query", cleanQuery)
-            putExtra("search_query", cleanQuery)
-            putExtra(Intent.EXTRA_TEXT, cleanQuery)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-
-        for (packageName in candidates) {
-            val intents = listOf(
-                "youtube_open_search" to Intent(YOUTUBE_OPEN_SEARCH_ACTION).apply {
-                    setPackage(packageName)
-                }.withYoutubeQuery(),
-                "https_results" to Intent(Intent.ACTION_VIEW, webResultsUri).apply {
-                    setPackage(packageName)
-                }.withYoutubeQuery(),
-                "native_results" to Intent(Intent.ACTION_VIEW, nativeResultsUri).apply {
-                    setPackage(packageName)
-                }.withYoutubeQuery(),
-                "android_search" to Intent(Intent.ACTION_SEARCH).apply {
-                    setPackage(packageName)
-                }.withYoutubeQuery()
-            )
-
-            for ((method, intent) in intents) {
-                try {
-                    context.startActivity(intent)
-                    return ExecutionResult(
-                        true,
-                        "Ищу в YouTube: $cleanQuery",
-                        "youtubeSearch package=$packageName method=$method query=$cleanQuery"
-                    )
-                } catch (_: Exception) {
-                    // Try the next intent contract or package.
-                }
+        fun launch(intent: Intent, method: String, packageName: String?): ExecutionResult? {
+            return try {
+                intent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+                context.startActivity(intent)
+                ExecutionResult(
+                    true,
+                    "Ищу в YouTube: $cleanQuery",
+                    "youtubeSearch package=${packageName ?: "resolver"} method=$method query=$cleanQuery"
+                )
+            } catch (_: Exception) {
+                null
             }
         }
 
+        // A normal YouTube results URL is the most compatible contract for stock
+        // YouTube, ReVanced and ReVanced Extended. Explicitly target the selected
+        // package first, then known package ids.
+        for (packageName in candidates) {
+            launch(
+                Intent(Intent.ACTION_VIEW, resultsUri).setPackage(packageName),
+                "explicit_https_results",
+                packageName
+            )?.let { return it }
+
+            launch(
+                Intent(Intent.ACTION_SEARCH).setPackage(packageName).apply {
+                    putExtra(SearchManager.QUERY, cleanQuery)
+                    putExtra("query", cleanQuery)
+                    putExtra("search_query", cleanQuery)
+                },
+                "explicit_android_search",
+                packageName
+            )?.let { return it }
+        }
+
+        // Last resort: let Android's resolver route the YouTube URL. This also
+        // supports custom ReVanced package names not present in the built-in list.
+        launch(Intent(Intent.ACTION_VIEW, resultsUri), "resolver_https_results", null)?.let { return it }
+
         return ExecutionResult(
             false,
-            "YouTube ReVanced не найден. Выбери его в настройках AAS",
+            "Не удалось открыть поиск YouTube",
             "youtubeSearch failed query=$cleanQuery preferredPackage=$preferredPackage"
         )
+    }
+
+
+    /**
+     * Requests assistant-style playback from YouTube/ReVanced. Stock YouTube
+     * normally starts the top hit; custom builds may degrade to the search page.
+     */
+    fun playYoutube(query: String, preferredPackage: String): ExecutionResult {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isEmpty()) {
+            return openSelectedApp(preferredPackage, YOUTUBE_PACKAGES, "YouTube открыт")
+        }
+
+        // YouTube and most ReVanced builds do not implement
+        // MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH. They may accept the
+        // activity launch but ignore the query. Open the standard results page,
+        // then let our enabled AccessibilityService click the first video card.
+        val result = searchYoutube(cleanQuery, preferredPackage)
+        if (!result.success) return result
+
+        AasAccessibilityService.requestYoutubePlay(cleanQuery, preferredPackage)
+        return ExecutionResult(
+            true,
+            "Включаю в YouTube: $cleanQuery",
+            "youtubePlay via results+accessibility query=$cleanQuery package=$preferredPackage"
+        )
+    }
+
+    fun searchMusic(query: String, preferredPackage: String): ExecutionResult {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isEmpty()) {
+            return openSelectedApp(preferredPackage, MUSIC_PACKAGES, "Музыка открыта")
+        }
+        val candidates = buildList {
+            if (preferredPackage.isNotBlank()) add(preferredPackage)
+            addAll(MUSIC_PACKAGES.filterNot { it == preferredPackage })
+        }.distinct()
+        for (packageName in candidates) {
+            val searchIntent = Intent(Intent.ACTION_SEARCH)
+                .setPackage(packageName)
+                .putExtra(SearchManager.QUERY, cleanQuery)
+                .putExtra("query", cleanQuery)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            try {
+                context.startActivity(searchIntent)
+                return ExecutionResult(true, "Ищу музыку: $cleanQuery", "musicSearch package=$packageName query=$cleanQuery")
+            } catch (_: Exception) {
+                // Try the standard media-search contract below.
+            }
+            val mediaIntent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                .setPackage(packageName)
+                .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio")
+                .putExtra(SearchManager.QUERY, cleanQuery)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            try {
+                context.startActivity(mediaIntent)
+                return ExecutionResult(true, "Ищу музыку: $cleanQuery", "musicMediaSearch package=$packageName query=$cleanQuery")
+            } catch (_: Exception) {
+                // Try another package.
+            }
+        }
+        return ExecutionResult(false, "Не удалось открыть поиск музыки", "musicSearch failed query=$cleanQuery")
+    }
+
+    fun playMusic(query: String, preferredPackage: String): ExecutionResult {
+        val cleanQuery = query.trim()
+        if (cleanQuery.isEmpty()) {
+            return openSelectedApp(preferredPackage, MUSIC_PACKAGES, "Музыка открыта")
+        }
+        val candidates = buildList {
+            if (preferredPackage.isNotBlank()) add(preferredPackage)
+            addAll(MUSIC_PACKAGES.filterNot { it == preferredPackage })
+        }.distinct()
+        for (packageName in candidates) {
+            val intent = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
+                .setPackage(packageName)
+                .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio")
+                .putExtra(SearchManager.QUERY, cleanQuery)
+                .putExtra("query", cleanQuery)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            try {
+                context.startActivity(intent)
+                return ExecutionResult(true, "Включаю музыку: $cleanQuery", "musicPlay package=$packageName query=$cleanQuery")
+            } catch (_: Exception) {
+                // Try another package.
+            }
+        }
+        return searchMusic(cleanQuery, preferredPackage)
     }
 
     fun goHome(): ExecutionResult {
@@ -339,6 +426,12 @@ class AndroidActions(private val context: Context) {
 
     companion object {
         private const val YOUTUBE_OPEN_SEARCH_ACTION = "com.google.android.youtube.action.open.search"
+
+        val MUSIC_PACKAGES: List<String> = listOf(
+            "ru.yandex.music",
+            "com.spotify.music",
+            "com.google.android.apps.youtube.music"
+        )
 
         /** Selected app is always tried first; these are automatic fallbacks. */
         val YOUTUBE_PACKAGES: List<String> = listOf(

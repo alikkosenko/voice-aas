@@ -14,6 +14,10 @@ sealed interface VoiceCommand {
     data object RecirculationOuter : Vehicle
     data object RearDefrostOn : Vehicle
     data object RearDefrostOff : Vehicle
+    data object FrontDefrostOn : Vehicle
+    data object FrontDefrostOff : Vehicle
+    data object ClimateFlowOnlyOn : Vehicle
+    data object ClimateFlowOnlyOff : Vehicle
 
     enum class SunroofAction { OPEN, CLOSE, TILT, STOP, VENT, COMFORT }
     data class SetSunroof(val action: SunroofAction) : Vehicle
@@ -58,6 +62,9 @@ sealed interface VoiceCommand {
     data object OpenMusic : System
     data object OpenYoutube : System
     data class SearchYoutube(val query: String) : System
+    data class PlayYoutube(val query: String) : System
+    data class SearchMusic(val query: String) : System
+    data class PlayMusic(val query: String) : System
     data object OpenRadio : System
     data object GoHome : System
     data class SetBluetooth(val enabled: Boolean) : System

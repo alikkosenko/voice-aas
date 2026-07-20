@@ -21,6 +21,9 @@
         <package android:name="app.rvx.android.youtube" />
         <package android:name="com.google.android.youtube.revanced" />
         <package android:name="com.google.android.youtube.revanced.extended" />
+        <package android:name="com.github.olga_yakovleva.rhvoice.android" />
+        <package android:name="com.google.android.tts" />
+        <package android:name="com.svox.pico" />
         <package android:name="com.byd.autovoice.engine" />
         <package android:name="com.byd.autovoice.tts" />
         <intent>

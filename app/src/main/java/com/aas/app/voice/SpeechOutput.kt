@@ -15,14 +15,13 @@ import com.aas.app.AppPrefs
 import java.util.Locale
 
 /**
- * Process-wide, fault-tolerant Android TTS output.
+ * Small, process-wide Android TTS controller.
  *
- * Automotive Android builds often have several TTS services, a disabled BYD engine,
- * or an engine that initializes successfully but cannot speak Russian/Ukrainian.
- * This controller enumerates every installed TTS service, selects one that supports
- * the requested locale, routes speech through the media audio path, requests audio
- * focus and retries the utterance with the next engine when initialization/playback
- * fails or never starts.
+ * AAS does not bundle a neural voice model. It uses an installed Android TTS service,
+ * preferring RHVoice for low latency and compact offline Russian/Ukrainian voices.
+ * All normal engines are routed through the public media/navigation audio path; the
+ * private BYD stream 17 is deliberately not used because it is silent on some DiLink
+ * releases even when TextToSpeech reports successful playback.
  */
 class SpeechOutput(
     context: Context,
@@ -37,17 +36,18 @@ class SpeechOutput(
     private var activeEnginePackage: String? = null
     private var candidates: List<String?> = emptyList()
     private var candidateIndex = 0
-    private var engineGeneration = 0L
+    private var generation = 0L
     private var ready = false
     private var initializing = false
     private var enabled = prefs.voiceResponsesEnabled
 
     private var pendingText: String? = null
+    private var pendingSuccess: Boolean? = null
     private var activeText: String? = null
+    private var activeSuccess: Boolean? = null
     private var activeUtteranceId: String? = null
     private var utteranceStarted = false
-    private var utteranceFallbacks = 0
-    private var startWatchdog: Runnable? = null
+    private var watchdog: Runnable? = null
     private var focusRequest: AudioFocusRequest? = null
 
     init {
@@ -56,69 +56,42 @@ class SpeechOutput(
 
     fun setEnabled(value: Boolean) {
         enabled = value
-        val action = Runnable {
+        runOnMain {
             if (value) initialize(force = false)
             else {
                 pendingText = null
-                activeText = null
+                pendingSuccess = null
                 stopNow()
             }
         }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else mainHandler.post(action)
     }
 
-    fun reinitialize() {
-        val action = Runnable { initialize(force = true) }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else mainHandler.post(action)
+    fun reinitialize() = runOnMain { initialize(force = true) }
+
+    fun speak(text: String) = enqueue(text, success = null)
+
+    /** Speaks the full localized command result, not merely a generic acknowledgement. */
+    fun speakResult(text: String, success: Boolean) = enqueue(text, success)
+
+    fun stop() = runOnMain { stopNow() }
+
+    fun shutdown() = runOnMain {
+        enabled = false
+        pendingText = null
+        pendingSuccess = null
+        stopNow()
+        bundledAck.shutdown()
+        shutdownEngine()
     }
 
-    fun speak(text: String) {
+    private fun enqueue(text: String, success: Boolean?) {
         if (!enabled || !prefs.voiceResponsesEnabled || text.isBlank()) return
-        val action = Runnable {
-            if (!enabled || !prefs.voiceResponsesEnabled) return@Runnable
+        runOnMain {
+            if (!enabled || !prefs.voiceResponsesEnabled) return@runOnMain
             pendingText = text.trim()
-            utteranceFallbacks = 0
+            pendingSuccess = success
             if (ready) flushPending() else initialize(force = false)
         }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else mainHandler.post(action)
-    }
-
-    /**
-     * Audible command-result path for DiLink. It does not depend on Android TTS:
-     * a compact offline Russian/Ukrainian acknowledgement is bundled in the APK.
-     * The detailed result remains visible in the overlay and diagnostics.
-     */
-    fun speakResult(text: String, success: Boolean) {
-        if (!enabled || !prefs.voiceResponsesEnabled || text.isBlank()) return
-        val action = Runnable {
-            if (!enabled || !prefs.voiceResponsesEnabled) return@Runnable
-            // Stop a possibly stuck/silent system utterance before the guaranteed clip.
-            cancelStartWatchdog()
-            runCatching { tts?.stop() }
-            pendingText = null
-            activeText = null
-            activeUtteranceId = null
-            releaseAudioFocus()
-            bundledAck.play(success, prefs.languageTag)
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else mainHandler.post(action)
-    }
-
-    fun stop() {
-        val action = Runnable { stopNow() }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else mainHandler.post(action)
-    }
-
-    fun shutdown() {
-        val action = Runnable {
-            enabled = false
-            pendingText = null
-            activeText = null
-            stopNow()
-            bundledAck.shutdown()
-            shutdownEngine()
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else mainHandler.post(action)
     }
 
     private fun initialize(force: Boolean) {
@@ -127,10 +100,8 @@ class SpeechOutput(
             if (ready) flushPending()
             return
         }
-        if (force || candidates.isEmpty()) {
-            candidates = discoverCandidates()
-            candidateIndex = 0
-        }
+        candidates = discoverCandidates()
+        candidateIndex = 0
         shutdownEngine()
         createEngine()
     }
@@ -144,84 +115,96 @@ class SpeechOutput(
                 .distinct()
         }.getOrDefault(emptyList())
 
-        // Some BYD builds hide the vendor service from queryIntentServices until it
-        // has been explicitly enabled by the shell helper. Keep known packages in
-        // the candidate list whenever the package itself exists.
         fun packageInstalled(packageName: String): Boolean = runCatching {
             @Suppress("DEPRECATION")
             appContext.packageManager.getApplicationInfo(packageName, 0)
             true
         }.getOrDefault(false)
 
-        val installed = (installedServices + listOf(
+        val selected = prefs.ttsEnginePackage.trim().takeIf { it.isNotEmpty() }
+        val knownInstalled = listOf(
+            RHVOICE_PACKAGE,
+            GOOGLE_TTS_PACKAGE,
+            PICO_TTS_PACKAGE,
+            SAMSUNG_TTS_PACKAGE,
             BYD_TTS_PACKAGE,
             BYD_TTS_ENGINE_PACKAGE,
-        ).filter(::packageInstalled)).distinct()
+        ).filter(::packageInstalled)
+        val installed = (installedServices + knownInstalled).distinct()
 
-        // On DiLink the BYD engine understands the custom voice stream and is the
-        // most reliable first choice. Standard Android engines remain fallbacks.
-        val preferred = listOfNotNull(
-            BYD_TTS_PACKAGE.takeIf { it in installed },
-            BYD_TTS_ENGINE_PACKAGE.takeIf { it in installed },
-            "com.google.android.tts".takeIf { it in installed },
-            "com.github.olga_yakovleva.rhvoice.android".takeIf { it in installed },
-            "com.svox.pico".takeIf { it in installed },
-            "com.samsung.SMT".takeIf { it in installed },
-        )
-        return (preferred + installed + listOf<String?>(null)).distinct()
+        return buildList<String?> {
+            if (selected != null && (selected in installed || packageInstalled(selected))) add(selected)
+            if (RHVOICE_PACKAGE in installed) add(RHVOICE_PACKAGE)
+            // The system default is a useful fallback, but comes after RHVoice because
+            // a number of DiLink images default to a vendor engine without RU/UK data.
+            add(null)
+            listOf(GOOGLE_TTS_PACKAGE, PICO_TTS_PACKAGE, SAMSUNG_TTS_PACKAGE)
+                .filter { it in installed }
+                .forEach(::add)
+            installed.filterNot { it in this || it in BYD_ENGINE_PACKAGES }.forEach(::add)
+            // BYD engines remain last-resort candidates. They still use the public
+            // media path, never the private stream 17.
+            installed.filter { it in BYD_ENGINE_PACKAGES }.forEach(::add)
+        }.distinct()
     }
 
     private fun createEngine() {
-        if (!enabled || initializing || candidateIndex !in candidates.indices) return
+        if (!enabled || candidateIndex !in candidates.indices) {
+            failPermanently("no candidates")
+            return
+        }
         initializing = true
         ready = false
-        val generation = ++engineGeneration
+        val myGeneration = ++generation
         val packageName = candidates[candidateIndex]
         activeEnginePackage = packageName
         var created: TextToSpeech? = null
 
-        val listener = TextToSpeech.OnInitListener { status ->
+        val listener = TextToSpeech.OnInitListener { status: Int ->
             mainHandler.post {
-                if (generation != engineGeneration || created == null || tts !== created) {
+                if (myGeneration != generation || created == null || tts !== created) {
                     runCatching { created?.shutdown() }
                     return@post
                 }
                 initializing = false
                 if (status != TextToSpeech.SUCCESS) {
-                    Log.w(TAG, "TTS init failed engine=${packageName ?: "default"} status=$status")
                     tryNextEngine("init status=$status")
                     return@post
                 }
                 if (!configureEngine(created!!)) {
-                    Log.w(TAG, "TTS language unavailable engine=${packageName ?: "default"}")
                     tryNextEngine("language unavailable")
                     return@post
                 }
                 installProgressListener(created!!)
                 ready = true
+                Log.i(TAG, "TTS ready engine=${packageName ?: "system-default"}")
                 flushPending()
             }
         }
 
-        created = runCatching {
+        created = try {
             if (packageName == null) TextToSpeech(appContext, listener)
             else TextToSpeech(appContext, listener, packageName)
-        }.onFailure {
-            initializing = false
-            Log.w(TAG, "Unable to construct TTS engine=${packageName ?: "default"}", it)
-        }.getOrNull()
+        } catch (error: Throwable) {
+            Log.w(TAG, "Unable to construct engine=${packageName ?: "system-default"}", error)
+            null
+        }
         tts = created
-
-        if (created == null) tryNextEngine("constructor failed")
+        if (created == null) {
+            initializing = false
+            tryNextEngine("constructor failed")
+        }
     }
 
     private fun configureEngine(engine: TextToSpeech): Boolean {
         val requested = Locale.forLanguageTag(prefs.languageTag)
-        val locales = buildList {
+        val candidates = buildList {
             add(requested)
             if (prefs.languageTag.startsWith("uk", ignoreCase = true)) {
                 add(Locale("uk", "UA"))
                 add(Locale("uk"))
+                // A Russian fallback is preferable to silence when an installed
+                // engine has no Ukrainian voice data.
                 add(Locale("ru", "RU"))
             } else {
                 add(Locale("ru", "RU"))
@@ -229,7 +212,7 @@ class SpeechOutput(
             }
         }.distinctBy { it.toLanguageTag() }
 
-        val selected = locales.firstOrNull { locale ->
+        val selectedLocale = candidates.firstOrNull { locale ->
             val availability = runCatching { engine.isLanguageAvailable(locale) }
                 .getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
             availability != TextToSpeech.LANG_MISSING_DATA &&
@@ -238,20 +221,11 @@ class SpeechOutput(
                     .getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED) >= TextToSpeech.LANG_AVAILABLE
         }
 
-        // The final default engine is still allowed as a last-resort even if it
-        // cannot report language metadata correctly (common on vendor engines).
-        val languageUsable = selected != null || candidateIndex == candidates.lastIndex
-        // BYD DiLink exposes its spoken-assistant slider as custom legacy stream
-        // 17 (STREAM_BTTS). Routing standard Android TTS to STREAM_MUSIC can report
-        // successful playback while remaining inaudible in the vehicle. The custom
-        // route is used first; accessibility is a safe framework fallback.
-        val attributes = outputAudioAttributes()
-        val audioResult = runCatching { engine.setAudioAttributes(attributes) }
-            .getOrDefault(TextToSpeech.ERROR)
-        if (audioResult != TextToSpeech.SUCCESS) {
-            runCatching { engine.setAudioAttributes(standardSpeechAttributes()) }
-        }
-        runCatching { engine.setSpeechRate(1.0f) }
+        // Some vendor engines incorrectly report missing metadata. Permit only the
+        // final fallback candidate in that case; normal engines must confirm support.
+        val languageUsable = selectedLocale != null || candidateIndex == this.candidates.lastIndex
+        runCatching { engine.setAudioAttributes(speechAttributes()) }
+        runCatching { engine.setSpeechRate(prefs.ttsSpeechRate) }
         runCatching { engine.setPitch(1.0f) }
         return languageUsable
     }
@@ -262,26 +236,22 @@ class SpeechOutput(
                 mainHandler.post {
                     if (utteranceId != activeUtteranceId) return@post
                     utteranceStarted = true
-                    cancelStartWatchdog()
+                    cancelWatchdog()
                 }
             }
 
             override fun onDone(utteranceId: String?) {
                 mainHandler.post {
-                    if (utteranceId != activeUtteranceId) return@post
-                    finishUtterance()
+                    if (utteranceId == activeUtteranceId) finishUtterance()
                 }
             }
 
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                onError(utteranceId, TextToSpeech.ERROR)
-            }
+            override fun onError(utteranceId: String?) = onError(utteranceId, TextToSpeech.ERROR)
 
             override fun onError(utteranceId: String?, errorCode: Int) {
                 mainHandler.post {
-                    if (utteranceId != activeUtteranceId) return@post
-                    retryUtterance("playback error=$errorCode")
+                    if (utteranceId == activeUtteranceId) retryUtterance("playback error=$errorCode")
                 }
             }
 
@@ -296,17 +266,19 @@ class SpeechOutput(
     private fun flushPending() {
         if (!ready || !enabled || !prefs.voiceResponsesEnabled) return
         val text = pendingText?.takeIf { it.isNotBlank() } ?: return
+        val success = pendingSuccess
         pendingText = null
+        pendingSuccess = null
         activeText = text
+        activeSuccess = success
         utteranceStarted = false
-        val id = "aas-result-${System.nanoTime()}"
+        val id = "aas-tts-${System.nanoTime()}"
         activeUtteranceId = id
-        val outputStream = outputStreamType()
-        prepareOutputStream(outputStream)
-        acquireAudioFocus()
 
+        runCatching { audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0) }
+        acquireAudioFocus()
         val params = Bundle().apply {
-            putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, outputStream)
+            putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
             putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
         }
         val result = runCatching {
@@ -317,24 +289,23 @@ class SpeechOutput(
             retryUtterance("speak rejected")
             return
         }
-        scheduleStartWatchdog(id)
+        watchdog = Runnable {
+            if (activeUtteranceId == id && !utteranceStarted) retryUtterance("utterance did not start")
+        }.also { mainHandler.postDelayed(it, START_TIMEOUT_MS) }
     }
 
     private fun retryUtterance(reason: String) {
         val text = activeText ?: pendingText
-        cancelStartWatchdog()
+        val success = activeSuccess ?: pendingSuccess
+        cancelWatchdog()
+        runCatching { tts?.stop() }
         releaseAudioFocus()
         activeUtteranceId = null
         activeText = null
+        activeSuccess = null
         if (text.isNullOrBlank()) return
-
-        utteranceFallbacks += 1
-        if (utteranceFallbacks >= candidates.size) {
-            Log.w(TAG, "TTS failed after all engines: $reason")
-            pendingText = null
-            return
-        }
         pendingText = text
+        pendingSuccess = success
         tryNextEngine(reason)
     }
 
@@ -345,47 +316,45 @@ class SpeechOutput(
             candidateIndex += 1
             createEngine()
         } else {
-            ready = false
-            initializing = false
-            Log.w(TAG, "No usable TTS engine found")
+            failPermanently(reason)
         }
     }
 
-    private fun scheduleStartWatchdog(id: String) {
-        cancelStartWatchdog()
-        startWatchdog = Runnable {
-            if (activeUtteranceId == id && !utteranceStarted) {
-                retryUtterance("utterance did not start")
-            }
-        }.also { mainHandler.postDelayed(it, START_TIMEOUT_MS) }
-    }
-
-    private fun cancelStartWatchdog() {
-        startWatchdog?.let(mainHandler::removeCallbacks)
-        startWatchdog = null
+    private fun failPermanently(reason: String) {
+        ready = false
+        initializing = false
+        Log.w(TAG, "No usable TTS engine: $reason")
+        val success = pendingSuccess
+        pendingText = null
+        pendingSuccess = null
+        // Preserve a tiny offline audible acknowledgement as the last safety net.
+        if (success != null && enabled && prefs.voiceResponsesEnabled) {
+            bundledAck.play(success, prefs.languageTag)
+        }
     }
 
     private fun finishUtterance() {
-        cancelStartWatchdog()
+        cancelWatchdog()
         activeUtteranceId = null
         activeText = null
+        activeSuccess = null
         utteranceStarted = false
-        utteranceFallbacks = 0
         releaseAudioFocus()
     }
 
     private fun stopNow() {
         bundledAck.stop()
-        cancelStartWatchdog()
+        cancelWatchdog()
         runCatching { tts?.stop() }
         activeUtteranceId = null
         activeText = null
+        activeSuccess = null
         utteranceStarted = false
         releaseAudioFocus()
     }
 
     private fun shutdownEngine() {
-        engineGeneration += 1
+        generation += 1
         ready = false
         initializing = false
         runCatching { tts?.stop() }
@@ -394,51 +363,20 @@ class SpeechOutput(
         activeEnginePackage = null
     }
 
-    /**
-     * BYD's own voice packages use the dedicated DiLink BTTS stream (17). Normal
-     * Android engines must stay on STREAM_MUSIC: forcing Google/Pico/RHVoice onto
-     * the vendor-only stream can produce successful callbacks with no audible sound.
-     */
-    private fun outputStreamType(): Int = if (activeEnginePackage in BYD_ENGINE_PACKAGES) {
-        BYD_STREAM_BTTS
-    } else {
-        AudioManager.STREAM_MUSIC
+    private fun cancelWatchdog() {
+        watchdog?.let { mainHandler.removeCallbacks(it) }
+        watchdog = null
     }
 
-    private fun prepareOutputStream(stream: Int) {
-        runCatching {
-            audioManager.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
-            val max = audioManager.getStreamMaxVolume(stream).coerceAtLeast(1)
-            val current = audioManager.getStreamVolume(stream)
-            if (current <= 0) {
-                audioManager.setStreamVolume(stream, (max / 3).coerceAtLeast(1), 0)
-            }
-        }.onFailure {
-            Log.w(TAG, "Speech output stream $stream unavailable", it)
-        }
-    }
-
-    private fun bydVoiceAttributes(): AudioAttributes? = runCatching {
-        AudioAttributes.Builder().setLegacyStreamType(BYD_STREAM_BTTS).build()
-    }.getOrNull()
-
-    private fun standardSpeechAttributes(): AudioAttributes = AudioAttributes.Builder()
+    private fun speechAttributes(): AudioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build()
 
-    private fun outputAudioAttributes(): AudioAttributes =
-        if (outputStreamType() == BYD_STREAM_BTTS) {
-            bydVoiceAttributes() ?: standardSpeechAttributes()
-        } else {
-            standardSpeechAttributes()
-        }
-
     private fun acquireAudioFocus() {
         releaseAudioFocus()
-        val attributes = outputAudioAttributes()
         val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-            .setAudioAttributes(attributes)
+            .setAudioAttributes(speechAttributes())
             .setAcceptsDelayedFocusGain(false)
             .setOnAudioFocusChangeListener { }
             .build()
@@ -452,10 +390,17 @@ class SpeechOutput(
         runCatching { audioManager.abandonAudioFocusRequest(request) }
     }
 
+    private fun runOnMain(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
+    }
+
     companion object {
         private const val TAG = "AasSpeechOutput"
-        private const val START_TIMEOUT_MS = 5_000L
-        private const val BYD_STREAM_BTTS = 17
+        private const val START_TIMEOUT_MS = 3_500L
+        const val RHVOICE_PACKAGE = "com.github.olga_yakovleva.rhvoice.android"
+        private const val GOOGLE_TTS_PACKAGE = "com.google.android.tts"
+        private const val PICO_TTS_PACKAGE = "com.svox.pico"
+        private const val SAMSUNG_TTS_PACKAGE = "com.samsung.SMT"
         private const val BYD_TTS_PACKAGE = "com.byd.autovoice.tts"
         private const val BYD_TTS_ENGINE_PACKAGE = "com.byd.autovoice.engine"
         private val BYD_ENGINE_PACKAGES = setOf(BYD_TTS_PACKAGE, BYD_TTS_ENGINE_PACKAGE)
