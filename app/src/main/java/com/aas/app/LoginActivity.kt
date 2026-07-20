@@ -32,6 +32,8 @@ class LoginActivity : AppCompatActivity() {
 
         binding = ActivityLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        val savedUrl = prefs.authServerUrl.ifBlank { getString(R.string.auth_server_url) }
+        binding.inputServerUrl.setText(savedUrl)
         binding.buttonLogin.setOnClickListener { submitPassword() }
         binding.inputPassword.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -42,6 +44,14 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun submitPassword() {
+        val serverUrl = binding.inputServerUrl.text?.toString()?.trim().orEmpty()
+        if (serverUrl.isBlank() || (!serverUrl.startsWith("http://", true) && !serverUrl.startsWith("https://", true))) {
+            binding.serverUrlLayout.error = getString(R.string.auth_bad_server_url)
+            return
+        }
+        binding.serverUrlLayout.error = null
+        AppPrefs(this).authServerUrl = serverUrl
+
         val password = binding.inputPassword.text?.toString().orEmpty()
         if (password.isBlank()) {
             binding.passwordLayout.error = getString(R.string.auth_enter_password)
@@ -79,6 +89,7 @@ class LoginActivity : AppCompatActivity() {
 
     private fun setBusy(busy: Boolean) {
         binding.buttonLogin.isEnabled = !busy
+        binding.inputServerUrl.isEnabled = !busy
         binding.inputPassword.isEnabled = !busy
         binding.progressAuth.visibility = if (busy) android.view.View.VISIBLE else android.view.View.GONE
         binding.textAuthStatus.text = if (busy) getString(R.string.auth_checking) else ""

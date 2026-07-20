@@ -2,6 +2,7 @@ package com.aas.app.auth
 
 import android.content.Context
 import com.aas.app.R
+import com.aas.app.AppPrefs
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStream
@@ -20,8 +21,9 @@ object AuthApi {
     fun checkPassword(context: Context, password: String): Result {
         if (password.isBlank()) return Result.Invalid
 
-        val endpoint = context.getString(R.string.auth_server_url).trim()
-        if (endpoint.isBlank() || endpoint.contains("YOUR-DOMAIN", ignoreCase = true)) {
+        val configured = AppPrefs(context).authServerUrl.trim()
+        val endpoint = configured.ifBlank { context.getString(R.string.auth_server_url).trim() }
+        if (endpoint.isBlank() || endpoint.contains("SERVER_IP", ignoreCase = true)) {
             return Result.Error(context.getString(R.string.auth_server_not_configured))
         }
 
@@ -29,9 +31,9 @@ object AuthApi {
             return Result.Error(context.getString(R.string.auth_bad_server_url))
         }
 
-        val localDevelopment = url.host == "127.0.0.1" || url.host == "localhost"
-        if (!url.protocol.equals("https", ignoreCase = true) && !localDevelopment) {
-            return Result.Error(context.getString(R.string.auth_https_required))
+        if (!url.protocol.equals("http", ignoreCase = true) &&
+            !url.protocol.equals("https", ignoreCase = true)) {
+            return Result.Error(context.getString(R.string.auth_bad_server_url))
         }
 
         val connection = runCatching { url.openConnection() as HttpURLConnection }.getOrElse {
@@ -46,7 +48,7 @@ object AuthApi {
             connection.useCaches = false
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "AAS-Android/1.3.0")
+            connection.setRequestProperty("User-Agent", "AAS-Android/1.3.1")
 
             val requestBody = JSONObject().put("password", password).toString()
                 .toByteArray(StandardCharsets.UTF_8)

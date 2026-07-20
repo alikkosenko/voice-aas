@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Replace with your public HTTPS endpoint before building the APK. -->
-    <string name="auth_server_url" translatable="false">https://52.18.215.126/api/check-password</string>
+    <!-- Default endpoint. It can be changed on the login screen without rebuilding. -->
+    <string name="auth_server_url" translatable="false">http://SERVER_IP/api/check-password</string>
 
     <!-- Successful authorization lifetime. 720 hours = 30 days; 0 = no expiry. -->
-    <integer name="auth_validity_hours">0</integer>
+    <integer name="auth_validity_hours">720</integer>
 </resources>

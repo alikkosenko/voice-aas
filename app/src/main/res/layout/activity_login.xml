@@ -38,11 +38,28 @@
             android:textSize="15sp" />
 
         <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/passwordLayout"
+            android:id="@+id/serverUrlLayout"
             style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="26dp"
+            android:hint="@string/auth_server_url_hint">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/inputServerUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:imeOptions="actionNext"
+                android:inputType="textUri"
+                android:maxLines="1" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/passwordLayout"
+            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
             android:hint="@string/auth_password_hint"
             app:endIconMode="password_toggle">
 

@@ -60,6 +60,11 @@ class AppPrefs(context: Context) {
         get() = prefs.getString(KEY_RADIO_PACKAGE, "") ?: ""
         set(value) = prefs.edit().putString(KEY_RADIO_PACKAGE, value).apply()
 
+
+    var authServerUrl: String
+        get() = prefs.getString(KEY_AUTH_SERVER_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_AUTH_SERVER_URL, value.trim()).apply()
+
     var lastTranscript: String
         get() = prefs.getString(KEY_LAST_TRANSCRIPT, "—") ?: "—"
         set(value) = prefs.edit().putString(KEY_LAST_TRANSCRIPT, value).apply()
@@ -119,6 +124,7 @@ class AppPrefs(context: Context) {
         const val KEY_NAVIGATION_PACKAGE = "navigation_package"
         const val KEY_YOUTUBE_PACKAGE = "youtube_package"
         const val KEY_RADIO_PACKAGE = "radio_package"
+        const val KEY_AUTH_SERVER_URL = "auth_server_url"
         const val KEY_LAST_TRANSCRIPT = "last_transcript"
         const val KEY_LAST_RESULT = "last_result"
     }

@@ -123,12 +123,13 @@
 
     <string name="auth_title">Авторизація AAS</string>
     <string name="auth_description">Для запуску асистента потрібна перевірка пароля через сервер.</string>
+    <string name="auth_server_url_hint">Адреса сервера, наприклад http://1.2.3.4/api/check-password</string>
     <string name="auth_password_hint">Пароль</string>
     <string name="auth_login">Перевірити та увійти</string>
     <string name="auth_enter_password">Введіть пароль</string>
     <string name="auth_checking">Перевіряю пароль…</string>
     <string name="auth_wrong_password">Неправильний пароль</string>
-    <string name="auth_server_not_configured">Адресу сервера не налаштовано в auth_config.xml</string>
+    <string name="auth_server_not_configured">Вкажіть адресу сервера на екрані входу</string>
     <string name="auth_bad_server_url">Некоректна адреса сервера</string>
     <string name="auth_https_required">Для віддаленого сервера потрібен HTTPS</string>
     <string name="auth_connection_error">Не вдалося підключитися до сервера</string>

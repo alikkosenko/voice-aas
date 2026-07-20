@@ -37,16 +37,17 @@ $env:AAS_PASSWORD_HASH='pbkdf2_sha256$600000$...'
 uvicorn server:app --host 127.0.0.1 --port 8080
 ```
 
-## 3. HTTPS
+## 3. HTTP through Nginx
 
-Run Uvicorn behind Nginx/Caddy and publish:
+Run Uvicorn on `127.0.0.1:8080` and use the included `nginx-aas-password-http.conf`.
+
+Public endpoint:
 
 ```text
-https://your-domain.example/api/check-password
+http://SERVER_IP/api/check-password
 ```
 
-AAS intentionally rejects ordinary remote HTTP. Only HTTPS is accepted; HTTP is
-allowed solely for localhost development.
+See `INSTALL_SYSTEMD_HTTP.md` for installation commands.
 
 ## 4. Configure Android app
 
@@ -56,5 +57,5 @@ Edit:
 app/src/main/res/values/auth_config.xml
 ```
 
-Replace `auth_server_url` with the public HTTPS endpoint. The default authorization
+Enter the public HTTP endpoint on the AAS login screen. The address is saved locally. The default authorization
 lifetime is 720 hours (30 days). Set `auth_validity_hours` to `0` for no expiry.
