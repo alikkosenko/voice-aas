@@ -9,10 +9,11 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import com.aas.app.MainActivity
+import com.aas.app.LoginActivity
 import com.aas.app.R
 import com.aas.app.UkrainianTranslator
 import com.aas.app.accessibility.AasAccessibilityService
+import com.aas.app.auth.AuthState
 import com.aas.app.runtime.AasRuntime
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -34,6 +35,10 @@ class VoiceReadyService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if (!AuthState.isAuthorized(this)) {
+            stopSelf()
+            return
+        }
         AasRuntime.requireInitialized(this)
         startForeground(NOTIFICATION_ID, createNotification(getString(R.string.service_starting)))
         AasRuntime.voice.preload()
@@ -50,6 +55,10 @@ class VoiceReadyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!AuthState.isAuthorized(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         AasRuntime.voice.preload()
         if (intent?.action == ACTION_REPAIR_NOW) {
             worker.execute { repairRuntime(force = true) }
@@ -60,6 +69,10 @@ class VoiceReadyService : Service() {
     private fun repairRuntime(force: Boolean) {
         if (!repairRunning.compareAndSet(false, true)) return
         try {
+            if (!AuthState.isAuthorized(this)) {
+                stopSelf()
+                return
+            }
             AasRuntime.voice.preload()
             if (!AasRuntime.prefs.enabled) {
                 updateNotification(getString(R.string.service_voice_disabled))
@@ -146,7 +159,7 @@ class VoiceReadyService : Service() {
         val openIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, LoginActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID)

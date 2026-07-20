@@ -50,7 +50,6 @@ object AasRuntime {
             onFinished = {},
         )
         initialized = true
-        voice.preload()
     }
 
     fun requireInitialized(context: Context) {

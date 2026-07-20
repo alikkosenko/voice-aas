@@ -120,4 +120,19 @@
     <string name="key_capture_timeout">Кнопка не получена за 20 секунд</string>
     <string name="recognizer_ready_suffix"> • готов</string>
     <string name="recognizer_loading_suffix"> • загрузка</string>
+
+    <string name="auth_title">Авторизация AAS</string>
+    <string name="auth_description">Для запуска ассистента требуется проверка пароля через сервер.</string>
+    <string name="auth_password_hint">Пароль</string>
+    <string name="auth_login">Проверить и войти</string>
+    <string name="auth_enter_password">Введите пароль</string>
+    <string name="auth_checking">Проверяю пароль…</string>
+    <string name="auth_wrong_password">Неправильный пароль</string>
+    <string name="auth_server_not_configured">Адрес сервера не настроен в auth_config.xml</string>
+    <string name="auth_bad_server_url">Некорректный адрес сервера</string>
+    <string name="auth_https_required">Для удалённого сервера требуется HTTPS</string>
+    <string name="auth_connection_error">Не удалось подключиться к серверу</string>
+    <string name="auth_too_many_attempts">Слишком много попыток. Повторите позже.</string>
+    <string name="auth_server_error">Сервер временно недоступен</string>
+    <string name="auth_http_error">Ошибка сервера: HTTP %1$d</string>
 </resources>

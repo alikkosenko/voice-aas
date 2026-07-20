@@ -120,4 +120,19 @@
     <string name="key_capture_timeout">Кнопку не отримано протягом 20 секунд</string>
     <string name="recognizer_ready_suffix"> • готово</string>
     <string name="recognizer_loading_suffix"> • завантаження</string>
+
+    <string name="auth_title">Авторизація AAS</string>
+    <string name="auth_description">Для запуску асистента потрібна перевірка пароля через сервер.</string>
+    <string name="auth_password_hint">Пароль</string>
+    <string name="auth_login">Перевірити та увійти</string>
+    <string name="auth_enter_password">Введіть пароль</string>
+    <string name="auth_checking">Перевіряю пароль…</string>
+    <string name="auth_wrong_password">Неправильний пароль</string>
+    <string name="auth_server_not_configured">Адресу сервера не налаштовано в auth_config.xml</string>
+    <string name="auth_bad_server_url">Некоректна адреса сервера</string>
+    <string name="auth_https_required">Для віддаленого сервера потрібен HTTPS</string>
+    <string name="auth_connection_error">Не вдалося підключитися до сервера</string>
+    <string name="auth_too_many_attempts">Забагато спроб. Повторіть пізніше.</string>
+    <string name="auth_server_error">Сервер тимчасово недоступний</string>
+    <string name="auth_http_error">Помилка сервера: HTTP %1$d</string>
 </resources>

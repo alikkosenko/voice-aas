@@ -19,6 +19,7 @@ import android.widget.TextView
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
 import com.aas.app.AppPrefs
+import com.aas.app.auth.AuthState
 import com.aas.app.runtime.AasRuntime
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -52,12 +53,13 @@ class AasAccessibilityService : AccessibilityService() {
         // WindowManager.addView() delay after a steering-wheel button press.
         ensureVoiceOverlayCreated()
         if (overlayRequested) showVoiceOverlayInternal(overlayText, overlayColor)
-        AasRuntime.voice.preload()
+        if (AuthState.isAuthorized(this)) AasRuntime.voice.preload()
         prefs.lastResult = localized("Accessibility подключён; кнопка руля готова", "Accessibility підключено; кнопка керма готова")
         Log.i(TAG, "connected; steering-wheel key filter active")
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
+        if (!AuthState.isAuthorized(this)) return false
         return try {
             val isDown = event.action == KeyEvent.ACTION_DOWN
             val firstDown = isDown && event.repeatCount == 0

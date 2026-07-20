@@ -130,3 +130,10 @@ Required Notice: Copyright AndyShaman (https://github.com/AndyShaman)
 - `Ютуб огляд Denza Z9 GT`
 
 AAS сначала отправляет специализированную команду открытия поиска YouTube, затем использует прямую HTTPS-ссылку на результаты, native deep-link и стандартный Android `ACTION_SEARCH` как резервные способы. Поддерживается оригинальный пакет YouTube и распространённые пользовательские package ID ReVanced/ReVanced Extended; вручную выбранное приложение всегда имеет приоритет.
+
+
+## Remote password gate (1.3.0)
+
+1. Deploy the Python server from `server/`.
+2. Put its public HTTPS URL into `app/src/main/res/values/auth_config.xml`.
+3. Build and install the APK. AAS will not preload Vosk, start the boot service, or react to the steering-wheel button until remote authorization succeeds.

@@ -20,6 +20,7 @@ import androidx.core.os.LocaleListCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
 import com.aas.app.accessibility.AasAccessibilityService
+import com.aas.app.auth.AuthState
 import com.aas.app.runtime.AasRuntime
 import com.aas.app.service.VoiceReadyService
 import com.aas.app.vehicle.BydWriteAllowlist
@@ -50,6 +51,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         prefs = AppPrefs(this)
         AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(prefs.languageTag))
         super.onCreate(savedInstanceState)
+        if (!AuthState.isAuthorized(this)) {
+            startActivity(Intent(this, LoginActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            finish()
+            return
+        }
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         AasRuntime.requireInitialized(this)
@@ -150,6 +158,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     override fun onResume() {
         super.onResume()
+        if (!AuthState.isAuthorized(this)) {
+            startActivity(Intent(this, LoginActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            finish()
+            return
+        }
         refreshStatus()
     }
 

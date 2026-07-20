@@ -3,6 +3,7 @@ package com.aas.app
 import android.app.Application
 import android.os.Build
 import android.util.Log
+import com.aas.app.auth.AuthState
 import com.aas.app.runtime.AasRuntime
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 
@@ -14,7 +15,7 @@ class AasApplication : Application() {
                 HiddenApiBypass.addHiddenApiExemptions("Landroid/os/ServiceManager;")
             }.onFailure { Log.w(TAG, "ServiceManager hidden-api exemption failed", it) }
         }
-        AasRuntime.initialize(this)
+        if (AuthState.isAuthorized(this)) AasRuntime.initialize(this)
     }
 
     companion object { private const val TAG = "AasApplication" }
