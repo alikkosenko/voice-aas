@@ -6,33 +6,54 @@ package com.aas.app.commands
  * unknown, the caller must send the original transcript to the AI planner.
  */
 class LocalCommandPlanner(private val parser: CommandParser) {
+    private val comfortPresetPlanner = SmartComfortPresetPlanner()
+
     data class Decision(
         val commands: List<VoiceCommand>,
         val complete: Boolean,
-        val technicalMessage: String
+        val technicalMessage: String,
+        val spokenSummary: String? = null
+    )
+
+    private data class LocalUnit(
+        val commands: List<VoiceCommand>,
+        val smartProfile: SmartComfortPresetPlanner.Profile? = null,
+        val spokenSummary: String? = null
     )
 
     fun plan(transcript: String): Decision {
+        // A pure natural-language comfort complaint is one local atomic preset.
+        comfortPresetPlanner.plan(transcript)?.let { preset ->
+            return smartDecision(preset)
+        }
+
         val fullCommand = parser.parse(transcript)
         val clauses = splitCommandClauses(transcript)
 
         if (clauses.size >= 2) {
-            val parsedClauses = clauses.map { clause -> clause to parser.parse(clause) }
-            val recognized = parsedClauses.mapNotNull { it.second }
-            val allRecognized = recognized.size == parsedClauses.size
+            val parsedClauses = clauses.map { clause -> clause to parseLocalUnit(clause) }
+            val allRecognized = parsedClauses.all { it.second != null }
 
             if (allRecognized) {
+                val units = parsedClauses.mapNotNull { it.second }
+                val commands = units.flatMap { it.commands }
+                val smartProfiles = units.mapNotNull { it.smartProfile }
                 return Decision(
-                    commands = recognized,
+                    commands = commands,
                     complete = true,
-                    technicalMessage = "route=local-chain; clauses=${clauses.size}; ai=false"
+                    technicalMessage = buildString {
+                        append("route=local-chain; clauses=${clauses.size}; commands=${commands.size}; ai=false")
+                        if (smartProfiles.isNotEmpty()) append("; smartProfiles=${smartProfiles.joinToString()}")
+                    },
+                    spokenSummary = units.singleOrNull()?.spokenSummary
                 )
             }
 
             // Do not split artist/song titles merely because they contain "и"/"та".
-            // A failed chain is escalated only when at least two clauses contain
-            // explicit command verbs.
-            val actionableClauses = clauses.count(::containsCommandVerb)
+            // A failed chain is escalated only when at least two clauses look actionable.
+            val actionableClauses = parsedClauses.count { (clause, unit) ->
+                unit != null || containsCommandVerb(clause)
+            }
             if (actionableClauses >= 2) {
                 val unknown = parsedClauses
                     .filter { it.second == null }
@@ -59,6 +80,24 @@ class LocalCommandPlanner(private val parser: CommandParser) {
             technicalMessage = "route=ai; reason=local-parser-no-match"
         )
     }
+
+    private fun parseLocalUnit(clause: String): LocalUnit? {
+        comfortPresetPlanner.plan(clause)?.let { preset ->
+            return LocalUnit(
+                commands = preset.commands,
+                smartProfile = preset.profile,
+                spokenSummary = preset.spokenSummary
+            )
+        }
+        return parser.parse(clause)?.let { LocalUnit(listOf(it)) }
+    }
+
+    private fun smartDecision(preset: SmartComfortPresetPlanner.Plan): Decision = Decision(
+        commands = preset.commands,
+        complete = true,
+        technicalMessage = "route=local-smart-comfort; profile=${preset.profile}; commands=${preset.commands.size}; ai=false",
+        spokenSummary = preset.spokenSummary
+    )
 
     private fun splitCommandClauses(raw: String): List<String> = raw
         .replace(Regex("[;,.]+"), " | ")

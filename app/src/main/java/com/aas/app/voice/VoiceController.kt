@@ -367,12 +367,14 @@ class VoiceController(
     private fun buildAndExecutePlan(transcript: String): ExecutionResult {
         val localPlan = localPlanner.plan(transcript)
         var plannerTechnical = localPlan.technicalMessage
+        var localSpokenSummary: String? = localPlan.spokenSummary
 
         val commands: List<VoiceCommand> = when {
             localPlan.commands.isNotEmpty() && localPlan.complete -> {
                 localPlan.commands
             }
             aiPlanner.isConfigured() -> {
+                localSpokenSummary = null
                 try {
                     val plan = aiPlanner.plan(transcript)
                     plannerTechnical = "${localPlan.technicalMessage}; AI fallback: ${plan.technicalMessage}"
@@ -387,6 +389,7 @@ class VoiceController(
                 }
             }
             else -> {
+                localSpokenSummary = null
                 plannerTechnical = "${localPlan.technicalMessage}; AI unavailable"
                 emptyList()
             }
@@ -413,7 +416,7 @@ class VoiceController(
         val summary = if (commands.size == 1) {
             results.first().spokenMessage
         } else if (allSucceeded) {
-            "Выполнено команд: ${commands.size}"
+            localSpokenSummary ?: "Выполнено команд: ${commands.size}"
         } else {
             "Выполнено $completed из ${commands.size} команд"
         }

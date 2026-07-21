@@ -125,7 +125,7 @@ Required Notice: Copyright AndyShaman (https://github.com/AndyShaman)
 В настройках AAS выбери установленный YouTube/ReVanced и музыкальное приложение.
 
 - `Найди на YouTube обзор BYD Seal` — открывает результаты поиска.
-- `Включи на YouTube Linkin Park Numb` — отправляет Android media-search intent, который на поддерживаемых сборках запускает верхний результат; иначе открывается поиск.
+- `Включи на YouTube Linkin Park Numb` — открывает поиск и через Accessibility запускает первый доступный видеорезультат.
 - `Найди песню Кино Группа крови` — поиск в выбранном музыкальном приложении.
 - `Включи песню Кино Группа крови` — попытка запустить найденный трек.
 
@@ -152,3 +152,10 @@ AAS now tries the built-in parser before OpenAI. Direct commands and completely
 recognized command chains execute offline. OpenAI is used only for natural,
 ambiguous or partially unknown requests. See `LOCAL_FIRST_ROUTING.md` and
 `RELEASE_NOTES_1.5.0.md`.
+
+## Smart comfort presets in 1.5.1
+
+Natural phrases such as `Мне жарко`, `Мне очень холодно`, `Мені спекотно` and
+`Я змерзаю` are now converted into deterministic local climate/seat plans before
+OpenAI. Presets can also be combined with other locally recognized commands.
+See `SMART_COMFORT_PRESETS.md` and `RELEASE_NOTES_1.5.1.md`.

@@ -13,8 +13,8 @@ android {
         // BYDMate targets 29 on DiLink. Keeping the same target avoids newer
         // Android behavior changes that are irrelevant to a sideloaded head-unit app.
         targetSdk = 29
-        versionCode = 150
-        versionName = "1.5.0"
+        versionCode = 151
+        versionName = "1.5.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a") }
